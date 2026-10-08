@@ -1,0 +1,35 @@
+{
+  "name": "@sidequest/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "db:seed": "tsx src/seed.ts",
+    "db:reset": "tsx src/seed.ts --reset"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "mongoose": "^8.19.0",
+    "zod": "^3.25.76",
+    "express-session": "^1.18.2",
+    "connect-mongo": "^5.1.0",
+    "helmet": "^8.1.0",
+    "cors": "^2.8.5",
+    "express-rate-limit": "^8.1.0",
+    "socket.io": "^4.8.1",
+    "dotenv": "^17.2.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6",
+    "@types/node": "^22.18.0",
+    "@types/express": "^5.0.3",
+    "@types/express-session": "^1.18.2",
+    "@types/cors": "^2.8.19",
+    "@types/supertest": "^6.0.3",
+    "supertest": "^7.1.4",
+    "socket.io-client": "^4.8.1"
+  }
+}
