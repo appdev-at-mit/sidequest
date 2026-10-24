@@ -29,12 +29,38 @@ class DBController {
             end: body.end
         })
     }
-    async signup(body) {
+    async signup(kerb, name, password) {
         await this.users.insertOne({
-            kerb: body.kerb,
-            name: body.name,
+            kerb,
+            name,
+            password,
             strikes: 0,
             blocked: []
+        })
+    }
+    async findUser(kerb) {
+        return await this.users.findOne({
+            kerb
+        })
+    }
+    async toggleBlock(kerb, dest) {
+        const user = await this.users.findOne({
+            kerb: kerb
+        })
+        let blocked = false;
+        for (const u of user.blocked) if (u == dest) blocked = true;
+        let newBlocked;
+        if (blocked) {
+            newBlocked = [];
+            for (const u of user.blocked) if (u != dest) newBlocked.push(u);
+        } else {
+            newBlocked = user.blocked;
+            newBlocked.push(dest);
+        }
+        await this.users.updateOne({
+            kerb: kerb
+        }, {
+            $set: {blocked: newBlocked}
         })
     }
 }
