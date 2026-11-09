@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "main": "test-db.js",
   "scripts": {
+    "dev": "node api.js",
+    "start": "node api.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
