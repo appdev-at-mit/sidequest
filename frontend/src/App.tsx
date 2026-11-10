@@ -1,122 +1,130 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useEffect, useState } from "react";
+import ExploreTasks from "./pages/ExploreTasks";
+import ActiveQuest from "./pages/ActiveQuest";
+import ProfilePage from "./pages/ProfilePage";
+import CompleteQuest from "./pages/CompleteQuest";
+import Icon from "./components/Icon";
+import Logo from "./components/Logo";
+import Avatar from "./components/Avatar";
+import { mapRequests } from "./data/requests";
 
-function App() {
-  const [count, setCount] = useState(0)
-
+type Page = "explore" | "active" | "profile" | "complete";
+export default function App() {
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    const savedTheme = localStorage.getItem("sidequest-theme");
+    if (savedTheme === "light" || savedTheme === "dark") return savedTheme;
+    return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  });  const [page, setPage] = useState<Page>("explore");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [selectedRequestId, setSelectedRequestId] = useState(1);
+  const [query, setQuery] = useState("");
+  const [stage, setStage] = useState<1 | 2>(1);
+  const selectedRequest = mapRequests.find(r => r.id === selectedRequestId) ?? mapRequests[0];
+  useEffect(() => {
+    localStorage.setItem("sidequest-theme", theme);
+    document.documentElement.style.colorScheme = theme;
+  }, [theme]);
+  function navigate(next: Page) {
+    setPage(next);
+    setMenuOpen(false);
+  }
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
+    <div className={`theme-${theme} min-h-screen bg-[#F7F9F9] text-[#102A3A]`}>
+      <header className="relative z-50 h-16 border-b border-[#BED8D4] bg-[#F7F9F9]">
+        <div className="flex h-full items-center gap-4 px-4 sm:px-6">
+          <button
+            onClick={() => setMenuOpen(true)}
+            className="grid h-10 w-10 place-items-center rounded-md text-[#102A3A] transition hover:bg-[#BED8D4]/35"
+            aria-label="Open menu"
+          >
+            <Icon name="menu" size={21} />
+          </button>
+          <button onClick={() => navigate("explore")} className="shrink-0">
+            <Logo />
+          </button>
+
+          <form
+            className="mx-auto hidden h-10 w-full max-w-md items-center gap-2 rounded-md border border-[#BED8D4] bg-white px-3 focus-within:border-[#2081C3] sm:flex"
+            onSubmit={(event) => event.preventDefault()}
+          >
+            <Icon name="search" size={18} />
+            <label htmlFor="task-search" className="sr-only">
+              Search tasks
+            </label>
+            <input
+              id="task-search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search tasks near MIT"
+              className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
+            />
+          </form>
+
+          <button className="relative ml-auto grid h-10 w-10 place-items-center rounded-md text-slate-600 transition hover:bg-[#BED8D4]/30">
+            <Icon name="bell" size={19} />
+            <span className="absolute right-2 top-2 h-2 w-2 rounded-full border-2 border-[#F7F9F9] bg-[#63D2FF]" />
+          </button>
+          <button
+            onClick={() => setTheme((current) => (current === "light" ? "dark" : "light"))}
+            className="grid h-10 w-10 place-items-center rounded-md text-slate-600 transition hover:bg-[#BED8D4]/30"
+            aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
+            title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
+          >
+            <Icon name={theme === "light" ? "moon" : "sun"} size={19} />
+          </button>
+          <button onClick={() => navigate("profile")} aria-label="View profile">
+            <Avatar initials="JD" />
+          </button>
         </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
+      </header>
+      <button
+        onClick={() => setMenuOpen(false)}
+        className={`fixed inset-0 z-[70] bg-[#102A3A]/25 transition-opacity ${
+          menuOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0"
+        }`}
+        aria-label="Close menu"
+        tabIndex={menuOpen ? 0 : -1}
+      />
+      <aside
+        className={`fixed inset-y-0 left-0 z-[80] w-[300px] max-w-[86vw] border-r border-[#BED8D4] bg-[#F7F9F9] transition-transform duration-200 ${
+          menuOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+        aria-hidden={!menuOpen}
+      >
+        <div className="flex h-16 items-center border-b border-[#BED8D4] px-5">
+          <Logo />
+        </div>
+        <div className="p-4">
+          <p className="px-3 pb-2 pt-2 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">
+            Navigate
           </p>
+          {[
+            { label: "Explore tasks", icon: "location" as const, target: "explore" as const },
+            { label: "Active quest", icon: "bolt" as const, target: "active" as const },
+            { label: "Profile", icon: "user" as const, target: "profile" as const },
+          ].map((item) => (
+            <button
+              key={item.label}
+              onClick={() => navigate(item.target)}
+              className={`mt-1 flex w-full items-center gap-3 rounded-md px-3 py-3 text-sm font-semibold transition ${
+                page === item.target
+                  ? "bg-[#BED8D4]/45 text-[#2081C3]"
+                  : "text-slate-600 hover:bg-[#BED8D4]/25"
+              }`}
+            >
+              <Icon name={item.icon} size={19} />
+              {item.label}
+              <span className="ml-auto">
+                <Icon name="chevron" size={16} />
+              </span>
+            </button>
+          ))}
         </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+      </aside>
+      {page === "explore" && <ExploreTasks query={query} selectedRequestId={selectedRequestId} setSelectedRequestId={setSelectedRequestId} onAccept={() => { setStage(1); navigate("active"); }} />}
+      {page === "active" && <ActiveQuest selectedRequest={selectedRequest} stage={stage} setStage={setStage} onBack={() => navigate("explore")} onComplete={() => navigate("complete")} />}
+      {page === "profile" && <ProfilePage />}
+      {page === "complete" && <CompleteQuest selectedRequest={selectedRequest} onBack={() => navigate("explore")} />}
+    </div>
+  );
 }
-
-export default App
