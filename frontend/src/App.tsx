@@ -219,8 +219,6 @@ export default function App() {
   />
 )}
 
-{page === "profile" && <ProfilePage />}
-
 {page === "complete" && selectedRequest && (
   <CompleteQuest
     selectedRequest={selectedRequest}
