@@ -9,6 +9,7 @@ import Avatar from "./components/Avatar";
 import { mapRequests } from "./data/requests";
 
 type Page = "explore" | "active" | "profile" | "complete";
+
 export default function App() {
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     const savedTheme = localStorage.getItem("sidequest-theme");

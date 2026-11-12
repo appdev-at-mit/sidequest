@@ -30,13 +30,14 @@ class DBController {
         })
     }
     async signup(kerb, name, password) {
-        await this.users.insertOne({
+    await this.users.insertOne({
             kerb,
             name,
             password,
+            createdAt: new Date(),
             strikes: 0,
             blocked: []
-        })
+        });
     }
     async findUser(kerb) {
         return await this.users.findOne({

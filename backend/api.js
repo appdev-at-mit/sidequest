@@ -22,6 +22,26 @@ app.use(session({
 }));
 app.use(passport.initialize());
 app.use(passport.session());
+console.log("Request logger loaded");
+
+app.use((req, res, next) => {
+    console.log(req.method, req.path, req.isAuthenticated());
+    next();
+});
+
+app.use((req, res, next) => {
+    console.log({
+        method: req.method,
+        path: req.path,
+        hasSessionCookie: Boolean(req.cookies["connect.sid"]),
+        sessionUser: req.session.passport?.user ?? null,
+        authenticated: req.isAuthenticated()
+    });
+
+    next();
+});
+
+
 passport.use(new LocalStrategy({usernameField: "kerb"},
     async (kerb, password, done) => {
         try {
@@ -54,6 +74,13 @@ const db = new DBController();
     await db.connect();
 
     console.log("Successfully connected");
+
+    app.get("/api/auth-status", (req, res) => {
+        res.json({
+            isLoggedIn: req.isAuthenticated()
+        });
+    });
+
 
     app.post("/api/post-request", async (req, res) => {
         if (!req.isAuthenticated()) {
@@ -98,12 +125,16 @@ const db = new DBController();
                 msg: `Created user from kerb ${body.kerb} and name ${body.name}`
             })
         } catch (e) {
+            console.error("Signup failed:", e);
+
             res.status(400).send({
                 result: "fail",
-                msg: `User already exists with this kerb`
-            })
+                msg: "Could not create account"
+            });
         }
     })
+
+   
 
     app.post("/api/login", passport.authenticate("local"), (req, res) => {
         if (!req.user) {
@@ -150,6 +181,20 @@ const db = new DBController();
             "Content-type": "text/html"
         })
     })
+
+     app.get("/api/profile", (req, res) => {
+        if (!req.isAuthenticated()) {
+            return res.status(401).json({
+                msg: "You need to log in first"
+            });
+        }
+
+        res.json({
+            kerb: req.user.kerb,
+            name: req.user.name,
+            createdAt: req.user.createdAt ?? null
+        });
+    });
 
     app.listen(3000);
 })();
