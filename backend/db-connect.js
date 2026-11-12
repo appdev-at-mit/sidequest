@@ -1,4 +1,4 @@
-const { MongoClient } = require("mongodb");
+const { MongoClient, ObjectId } = require("mongodb");
 require("dotenv").config();
 const uri = process.env.MONGODB_URI;
 
@@ -64,6 +64,20 @@ class DBController {
             $set: {blocked: newBlocked}
         })
     }
+
+    async getPostedRequests(kerb) {
+    return this.requests
+        .find({ requester: kerb })
+        .sort({ _id: -1 })
+        .toArray();
+    }   
+
+    async deleteRequest(id, kerb) {
+        return this.requests.deleteOne({
+            _id: new ObjectId(id),
+            requester: kerb
+        });
+    }   
 }
 
 module.exports = DBController;

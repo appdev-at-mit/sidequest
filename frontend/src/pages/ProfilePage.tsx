@@ -9,6 +9,13 @@ type UserProfile = {
   createdAt: string | null;
 };
 
+type PostedRequest = {
+  _id: string;
+  description: string;
+  pay: number;
+  start: string | null;
+  end: string | null;
+};
 
 
 export default function ProfilePage() {
@@ -23,6 +30,121 @@ export default function ProfilePage() {
   const [name, setName] = useState("");
 
   const [profile, setProfile] = useState<UserProfile | null>(null);
+
+  const [showRequest, setShowRequest] = useState(false);
+  const [description, setDescription] = useState("");
+  const [pay, setPay] = useState("");
+  const [requestMessage, setRequestMessage] = useState("");
+
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+
+  const [postedRequests, setPostedRequests] = useState<PostedRequest[]>([]);
+  const [requestsLoading, setRequestsLoading] = useState(false);
+  const [requestsError, setRequestsError] = useState("");
+  const [requestsVersion, setRequestsVersion] = useState(0);
+
+  async function handleDeleteRequest(id: string) {
+    if (!window.confirm("Delete this request?")) return;
+
+    try {
+      const response = await fetch(`/api/requests/${id}`, {
+        method: "DELETE",
+      });
+
+      if (!response.ok) {
+        alert("Could not delete request.");
+        return;
+      }
+
+      setPostedRequests((requests) =>
+        requests.filter((request) => request._id !== id)
+      );
+    } catch {
+      alert("Could not reach the server.");
+    }
+}
+
+
+  useEffect(() => {
+    if (!isLoggedIn) {
+      setPostedRequests([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadRequests() {
+      setRequestsLoading(true);
+      setRequestsError("");
+
+      try {
+        const response = await fetch("/api/my-requests");
+
+        if (!response.ok) {
+          throw new Error("Could not load requests.");
+        }
+
+        const data: PostedRequest[] = await response.json();
+
+        if (!cancelled) setPostedRequests(data);
+      } catch {
+        if (!cancelled) setRequestsError("Could not load requests.");
+      } finally {
+        if (!cancelled) setRequestsLoading(false);
+      }
+    }
+
+    loadRequests();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoggedIn, requestsVersion]);
+
+  async function handlePostRequest() {
+    setRequestMessage("");
+
+    const amount = Number(pay);
+
+    if (!description.trim() || !Number.isFinite(amount) || amount <= 0) {
+      setRequestMessage("Enter a description and a payment above zero.");
+      return;
+    }
+
+    try {
+      if (!start || !end || new Date(end) <= new Date(start)) {
+        setRequestMessage("Choose a deadline after the start time.");
+        return;
+      } 
+
+
+      const response = await fetch("/api/post-request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+        description: description.trim(),
+        pay: amount,
+        start: new Date(start).toISOString(),
+        end: new Date(end).toISOString(),
+      }),
+      });
+
+      if (!response.ok) {
+        setRequestMessage("Could not post request.");
+        return;
+      }
+
+      setRequestMessage("Request posted!");
+      setRequestsVersion((version) => version + 1);
+      setProfileTab("Posted");
+      setDescription("");
+      setPay("");
+    } catch {
+      setRequestMessage("Could not reach the server.");
+    }
+  }
+
 
 useEffect(() => {
   if (!isLoggedIn) {
@@ -270,38 +392,146 @@ async function handleLogout() {
                   </button>
                 ))}
               </div>
-              <div className="divide-y divide-[#BED8D4]">
-                {(profileTab === "Completed"
-                  ? [
-                      ["Deliver lab materials", "May 18, 2025", "Completed", "$45"],
-                      ["Assemble a bookshelf", "May 12, 2025", "Completed", "$65"],
-                      ["Review Python assignment", "May 7, 2025", "Completed", "$38"],
-                    ]
-                  : [
-                      ["Photograph furniture listing", "Today", "Active", "$35"],
-                      ["Pick up library hold", "May 20, 2025", "Pending", "$22"],
-                    ]
-                ).map(([title, date, status, payout]) => (
-                  <article key={title} className="flex items-center gap-4 py-5">
-                    <div className="min-w-0 flex-1">
-                      <h2 className="font-bold">{title}</h2>
-                      <p className="mt-1 text-xs text-slate-500">{date}</p>
-                    </div>
-                    <span
-                      className={`rounded-full px-3 py-1.5 text-xs font-bold ${
-                        status === "Completed"
-                          ? "bg-[#78D5D7]/30 text-[#174F72]"
-                          : status === "Active"
-                            ? "bg-[#63D2FF]/30 text-[#174F72]"
-                            : "border border-[#BED8D4] text-slate-500"
-                      }`}
+                <div className="divide-y divide-[#BED8D4]">
+                {profileTab === "Completed" ? (
+                  <p className="py-5 text-sm text-slate-500">
+                    Completed requests aren’t connected yet.
+                  </p>
+                ) : requestsLoading ? (
+                  <p className="py-5">Loading requests...</p>
+                ) : requestsError ? (
+                  <p role="alert" className="py-5">{requestsError}</p>
+                ) : postedRequests.length === 0 ? (
+                  <p className="py-5 text-sm text-slate-500">
+                    You haven’t posted any requests yet.
+                  </p>
+                ) : (
+                  postedRequests.map((request) => (
+                    <article
+                      key={request._id}
+                      className="flex items-center gap-4 py-5"
                     >
-                      {status}
-                    </span>
-                    <span className="w-14 text-right font-extrabold text-[#2081C3]">{payout}</span>
-                  </article>
-                ))}
+                      <div className="min-w-0 flex-1">
+                        <h2 className="font-bold">{request.description}</h2>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {request.end
+                            ? `Deadline: ${new Date(request.end).toLocaleString()}`
+                            : "No deadline"}
+                        </p>
+                      </div>
+
+                      {/* <span className="rounded-full border border-[#BED8D4] px-3 py-1.5 text-xs font-bold text-slate-500">
+                        Posted
+                      </span> */}
+
+                      <button
+                        onClick={() => handleDeleteRequest(request._id)}
+                        className="text-sm font-bold text-red-600"
+                      >
+                        Delete
+                      </button>
+
+                      <span className="text-right font-extrabold text-[#2081C3]">
+                        {new Intl.NumberFormat("en-US", {
+                          style: "currency",
+                          currency: "USD",
+                        }).format(request.pay)}
+                      </span>
+                    </article>
+                  ))
+                )}
               </div>
+              <button
+  onClick={() => {
+    setRequestMessage("");
+    setShowRequest(true);
+  }}
+  className="rounded bg-blue-600 px-4 py-2 text-white"
+>
+  Post a request
+</button>
+
+  {showRequest && (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="request-title"
+        className="w-full max-w-sm rounded-xl bg-white p-6"
+      >
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            handlePostRequest();
+          }}
+          className="flex flex-col gap-3"
+        >
+          <h2 id="request-title" className="text-xl font-bold">
+            Post a request
+          </h2>
+
+          <input
+            placeholder="What do you need help with?"
+            aria-label="Request description"
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            className="rounded border p-2"
+            required
+          />
+
+          <input
+            type="number"
+            min="0.01"
+            step="0.01"
+            placeholder="Payment in dollars"
+            aria-label="Payment in dollars"
+            value={pay}
+            onChange={(event) => setPay(event.target.value)}
+            className="rounded border p-2"
+            required
+          />
+
+          {requestMessage && <p role="status">{requestMessage}</p>}
+          
+          <label>
+            Starts at
+            <input
+              type="datetime-local"
+              value={start}
+              onChange={(event) => setStart(event.target.value)}
+              className="block w-full rounded border p-2"
+              required
+            />
+          </label>
+
+          <label>
+            Deadline
+            <input
+              type="datetime-local"
+              value={end}
+              onChange={(event) => setEnd(event.target.value)}
+              className="block w-full rounded border p-2"
+              required
+            />
+          </label>
+
+          <button
+            type="submit"
+            className="rounded bg-blue-600 p-2 text-white"
+          >
+            Post request
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowRequest(false)}
+          >
+            Close
+          </button>
+        </form>
+      </div>
+    </div>
+  )}
             </section>
           </div>
         </main>

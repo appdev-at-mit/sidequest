@@ -91,7 +91,10 @@ const db = new DBController();
             return;
         }
         const body = req.body;
-        await db.postRequest(body);
+        await db.postRequest({
+            ...body,
+            requester: req.user.kerb
+        });
         res.status(200).json({
             result: "success",
             msg: "Created request"
@@ -194,6 +197,49 @@ const db = new DBController();
             name: req.user.name,
             createdAt: req.user.createdAt ?? null
         });
+    });
+
+    app.get("/api/my-requests", async (req, res, next) => {
+        if (!req.isAuthenticated()) {
+            return res.status(401).json({
+                msg: "You need to log in first"
+            });
+        }
+
+        try {
+            const requests = await db.getPostedRequests(req.user.kerb);
+            res.json(requests);
+        } catch (error) {
+            next(error);
+        }
+    });
+
+    app.delete("/api/requests/:id", async (req, res, next) => {
+        if (!req.isAuthenticated()) {
+            return res.status(401).json({
+                msg: "You need to log in first"
+            });
+        }
+
+        const { id } = req.params;
+
+        if (!/^[0-9a-fA-F]{24}$/.test(id)) {
+            return res.status(400).json({ msg: "Invalid request ID" });
+        }
+
+        try {
+            const result = await db.deleteRequest(id, req.user.kerb);
+
+            if (result.deletedCount === 0) {
+                return res.status(404).json({
+                    msg: "Request not found or not owned by you"
+                });
+            }
+
+            res.json({ msg: "Request deleted" });
+        } catch (error) {
+            next(error);
+        }
     });
 
     app.listen(3000);
