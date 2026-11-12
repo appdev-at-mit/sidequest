@@ -1,6 +1,6 @@
 import type L from "leaflet";
 export type Request = {
-  id: number;
+  id: string | number;
   category: string;
   title: string;
   location: string;
@@ -8,8 +8,8 @@ export type Request = {
   distance: string;
   description: string;
   posted: string;
-  lat: number;
-  lng: number;
+  lat: number | null;
+  lng: number | null;
   poster: string;
 };
 

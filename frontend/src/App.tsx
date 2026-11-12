@@ -6,7 +6,9 @@ import CompleteQuest from "./pages/CompleteQuest";
 import Icon from "./components/Icon";
 import Logo from "./components/Logo";
 import Avatar from "./components/Avatar";
-import { mapRequests } from "./data/requests";
+// import { mapRequests } from "./data/requests";
+import type { Request } from "./data/requests";
+import { useAuth } from "./AuthContext";
 
 type Page = "explore" | "active" | "profile" | "complete";
 
@@ -17,14 +19,82 @@ export default function App() {
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   });  const [page, setPage] = useState<Page>("explore");
   const [menuOpen, setMenuOpen] = useState(false);
-  const [selectedRequestId, setSelectedRequestId] = useState(1);
+  const { isLoggedIn } = useAuth();
+  const [requests, setRequests] = useState<Request[]>([]);
+  const [requestsError, setRequestsError] = useState("");
+  const [selectedRequestId, setSelectedRequestId] = useState<string | number>("");
   const [query, setQuery] = useState("");
   const [stage, setStage] = useState<1 | 2>(1);
-  const selectedRequest = mapRequests.find(r => r.id === selectedRequestId) ?? mapRequests[0];
+  const selectedRequest =
+  requests.find((request) => request.id === selectedRequestId)
+  ?? requests[0];
   useEffect(() => {
     localStorage.setItem("sidequest-theme", theme);
     document.documentElement.style.colorScheme = theme;
   }, [theme]);
+
+  useEffect(() => {
+  if (!isLoggedIn) {
+    setRequests([]);
+    setRequestsError("");
+    return;
+  }
+
+  let cancelled = false;
+
+  async function loadRequests() {
+    setRequestsError("");
+
+    try {
+      const response = await fetch("/api/get-all-requests");
+
+      if (!response.ok) {
+        throw new Error("Could not load requests");
+      }
+
+      const result = await response.json();
+
+      type DatabaseRequest = {
+        _id: string;
+        description: string;
+        pay: number;
+        requester: string | null;
+      };
+
+      const loaded: Request[] = result.data.map(
+        (request: DatabaseRequest) => ({
+          id: request._id,
+          title: request.description,
+          description: request.description,
+          price: new Intl.NumberFormat("en-US", {
+            style: "currency",
+            currency: "USD",
+          }).format(request.pay),
+          poster: request.requester ?? "Unknown user",
+          category: "Uncategorized",
+          location: "Location not provided",
+          distance: "",
+          posted: "",
+          lat: null,
+          lng: null,
+        })
+      );
+
+      if (!cancelled) setRequests(loaded);
+    } catch {
+      if (!cancelled) {
+        setRequestsError("Could not load requests.");
+      }
+    }
+  }
+
+  loadRequests();
+
+  return () => {
+    cancelled = true;
+  };
+}, [isLoggedIn, page]);
+
   function navigate(next: Page) {
     setPage(next);
     setMenuOpen(false);
@@ -122,7 +192,41 @@ export default function App() {
           ))}
         </div>
       </aside>
-      {page === "explore" && <ExploreTasks query={query} selectedRequestId={selectedRequestId} setSelectedRequestId={setSelectedRequestId} onAccept={() => { setStage(1); navigate("active"); }} />}
+      {page === "explore" && (
+  <>
+    {requestsError && <p role="alert">{requestsError}</p>}
+
+    <ExploreTasks
+      requests={requests}
+      query={query}
+      selectedRequestId={selectedRequestId}
+      setSelectedRequestId={setSelectedRequestId}
+      onAccept={() => {
+        setStage(1);
+        navigate("active");
+      }}
+    />
+  </>
+)}
+
+{page === "active" && selectedRequest && (
+  <ActiveQuest
+    selectedRequest={selectedRequest}
+    stage={stage}
+    setStage={setStage}
+    onBack={() => navigate("explore")}
+    onComplete={() => navigate("complete")}
+  />
+)}
+
+{page === "profile" && <ProfilePage />}
+
+{page === "complete" && selectedRequest && (
+  <CompleteQuest
+    selectedRequest={selectedRequest}
+    onBack={() => navigate("explore")}
+  />
+)}
       {page === "active" && <ActiveQuest selectedRequest={selectedRequest} stage={stage} setStage={setStage} onBack={() => navigate("explore")} onComplete={() => navigate("complete")} />}
       {page === "profile" && <ProfilePage />}
       {page === "complete" && <CompleteQuest selectedRequest={selectedRequest} onBack={() => navigate("explore")} />}
