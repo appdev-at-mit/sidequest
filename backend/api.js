@@ -1,6 +1,5 @@
 import express from "express";
 import DBController from "./db-connect.js";
-import cookieParser from "cookie-parser";
 import passport from "passport";
 import {Strategy as LocalStrategy} from "passport-local";
 import session from "express-session";
@@ -11,47 +10,35 @@ import path from "path";
 dotenv.config();
 
 const app = express();
+const production = process.env.NODE_ENV === "production";
+const sessionCookie = { httpOnly: true, sameSite: "lax", secure: production, path: "/" };
+const rememberDuration = 30 * 24 * 60 * 60 * 1000;
+
 app.use(express.json());
-app.use(cookieParser(process.env.SECRET));
+app.use("/api", (req, res, next) => {
+    res.set("Cache-Control", "no-store");
+    next();
+});
 app.use(session({
     secret: process.env.SECRET,
     resave: false,
     saveUninitialized: false,
+    cookie: sessionCookie,
     store: MongoStore.create({
-        mongoUrl: process.env.MONGODB_URI
+        mongoUrl: process.env.MONGODB_URI,
+        ttl: 24 * 60 * 60
     })
 }));
 app.use(passport.initialize());
 app.use(passport.session());
-console.log("Request logger loaded");
-
-app.use((req, res, next) => {
-    console.log(req.method, req.path, req.isAuthenticated());
-    next();
-});
-
-app.use((req, res, next) => {
-    console.log({
-        method: req.method,
-        path: req.path,
-        hasSessionCookie: Boolean(req.cookies["connect.sid"]),
-        sessionUser: req.session.passport?.user ?? null,
-        authenticated: req.isAuthenticated()
-    });
-
-    next();
-});
-
 app.use(express.static(path.resolve("../frontend/dist")));
-
 
 passport.use(new LocalStrategy({usernameField: "kerb"},
     async (kerb, password, done) => {
         try {
             const theUser = await db.findUser(kerb);
-            const storedHash = theUser.password;
-            const correct = await argon2.verify(storedHash, password);
-            if (correct) {
+            const correct = await argon2.verify(theUser?.password ?? dummyPasswordHash, password);
+            if (theUser && correct) {
                 return done(null, theUser);
             }
             return done(null, false);
@@ -72,9 +59,16 @@ passport.deserializeUser(async (kerb, done) => {
     }
 })
 const db = new DBController();
+let dummyPasswordHash;
+
+function validCredentials(kerb, password) {
+    return typeof kerb === "string" && kerb.length > 0 && kerb.length <= 64
+        && typeof password === "string" && password.length > 0 && password.length <= 256;
+}
 
 (async () => {
     await db.connect();
+    dummyPasswordHash = await argon2.hash("unused authentication placeholder");
 
     console.log("Successfully connected");
 
@@ -93,15 +87,29 @@ const db = new DBController();
             })
             return;
         }
-        const body = req.body;
-        await db.postRequest({
-            ...body,
-            requester: req.user.kerb
+        const { description, pay, start, end, lat, lng } = req.body ?? {};
+        const hasLocation = lat != null || lng != null;
+        if (typeof description !== "string" || !description.trim() || description.trim().length > 1000
+            || !Number.isFinite(pay) || pay <= 0) {
+            return res.status(400).json({ result: "fail", msg: "Enter a description and a payout above zero." });
+        }
+        if (typeof start !== "string" || typeof end !== "string" || !(Date.parse(end) > Date.parse(start))) {
+            return res.status(400).json({ result: "fail", msg: "Choose a deadline after the start time." });
+        }
+        if (hasLocation && (!Number.isFinite(lat) || Math.abs(lat) > 90
+            || !Number.isFinite(lng) || Math.abs(lng) > 180)) {
+            return res.status(400).json({ result: "fail", msg: "Choose a valid location on the map." });
+        }
+
+        const request = await db.postRequest({
+            requester: req.user.kerb,
+            description: description.trim(),
+            pay,
+            start,
+            end,
+            ...(hasLocation ? { lat, lng } : {}),
         });
-        res.status(200).json({
-            result: "success",
-            msg: "Created request"
-        })
+        res.status(200).json({ result: "success", msg: "Created request", data: request });
     })
 
     app.post("/api/toggle-block", async (req, res) => {
@@ -121,52 +129,61 @@ const db = new DBController();
     })
 
     app.post("/api/signup", async (req, res) => {
-        const body = req.body;
+        const { kerb, name, password } = req.body ?? {};
+        if (!validCredentials(kerb, password)
+            || kerb.trim() !== kerb || !/^[a-zA-Z0-9_-]+$/.test(kerb)
+            || typeof name !== "string" || !name.trim() || name.trim().length > 100) {
+            return res.status(400).json({ result: "fail", msg: "Enter a name and a valid Kerberos username." });
+        }
+        if (password.length < 12) {
+            return res.status(400).json({ result: "fail", msg: "Use a password with at least 12 characters." });
+        }
+
         try {
-            const pw = await argon2.hash(body.password);
-            await db.signup(body.kerb, body.name, pw);
-            
-            res.cookie("username", body.name).status(200).json({
-                result: "success",
-                msg: `Created user from kerb ${body.kerb} and name ${body.name}`
-            })
-        } catch (e) {
-            console.error("Signup failed:", e);
+            const hash = await argon2.hash(password);
+            await db.signup(kerb, name.trim(), hash);
+            res.status(200).json({ result: "success", msg: "Account created." });
+        } catch (error) {
+            if (error.code === 11000) {
+                return res.status(409).json({ result: "fail", msg: "An account already exists for that username." });
+            }
+            throw error;
+        }
+    });
 
-            res.status(400).send({
-                result: "fail",
-                msg: "Could not create account"
+    app.post("/api/login", (req, res, next) => {
+        const { kerb, password, remember } = req.body ?? {};
+        const invalidLogin = () => res.status(401).json({
+            result: "fail",
+            msg: "Incorrect username or password."
+        });
+        if (!validCredentials(kerb, password)) return invalidLogin();
+
+        passport.authenticate("local", (error, user) => {
+            if (error) return next(error);
+            if (!user) return invalidLogin();
+
+            req.logIn(user, (loginError) => {
+                if (loginError) return next(loginError);
+                if (remember === true) req.session.cookie.maxAge = rememberDuration;
+                req.session.save((saveError) => {
+                    if (saveError) return next(saveError);
+                    res.json({ result: "success", msg: "Logged in", kerb: user.kerb });
+                });
             });
-        }
-    })
+        })(req, res, next);
+    });
 
-   
-
-    app.post("/api/login", passport.authenticate("local"), (req, res) => {
-        if (!req.user) {
-            res.status(400).json({
-                result: "fail",
-                msg: "Could not log in"
-            })
-        } else {
-            res.status(200).json({
-                result: "success",
-                msg: "Logged in",
-                kerb: req.user.kerb,
-                session: req.sessionID
-            })
-        }
-    })
-
-    app.delete("/api/logout", async (req, res, next) => {
-        await req.logout(e => {
-            if (e) return next(e);
-            res.status(200).json({
-                result: "success",
-                msg: "logged out"
-            })
-        })
-    })
+    app.delete("/api/logout", (req, res, next) => {
+        req.logout(error => {
+            if (error) return next(error);
+            req.session.destroy(destroyError => {
+                if (destroyError) return next(destroyError);
+                res.clearCookie("connect.sid", sessionCookie);
+                res.json({ result: "success", msg: "Logged out" });
+            });
+        });
+    });
 
     app.get("/api/get-all-requests", async (req, res) => {
         if (!req.isAuthenticated()) {
@@ -308,6 +325,15 @@ const db = new DBController();
     app.get("/", async (req, res) => {
         res.status(200).sendFile(path.resolve("../frontend/index.html"));
     })
+
+    app.use((error, req, res, next) => {
+        if (res.headersSent) return next(error);
+        if (error.type === "entity.parse.failed") {
+            return res.status(400).json({ result: "fail", msg: "Invalid JSON request." });
+        }
+        console.error("API request failed:", req.method, req.path, error.name);
+        res.status(500).json({ result: "fail", msg: "The server could not complete the request." });
+    });
 
     app.listen(3000);
 })();

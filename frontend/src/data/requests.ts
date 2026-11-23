@@ -88,3 +88,7 @@ export const mapRequests: Request[] = [
 
 export const categories = ["All", "Delivery", "Moving", "Home Help", "Tech", "Academic"];
 export const CAMBRIDGE_CENTER: L.LatLngTuple = [42.3604, -71.0942];
+
+export const MAP_TILE_URL =
+  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}";
+export const MAP_TILE_OPTIONS = { attribution: "Tiles &copy; Esri", maxZoom: 19 };

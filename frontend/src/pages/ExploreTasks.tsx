@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import L from "leaflet";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
-import { categories, CAMBRIDGE_CENTER } from "../data/requests";
+import { categories, CAMBRIDGE_CENTER, MAP_TILE_URL, MAP_TILE_OPTIONS } from "../data/requests";
 import type { Request } from "../data/requests";
+import "./ExploreTasks.css";
 
 type Props = {
   requests: Request[];
@@ -22,13 +23,19 @@ export default function ExploreTasks({
 }: Props) {
   const [category, setCategory] = useState("All");
   const [requestOpen, setRequestOpen] = useState(false);
+  const [panelWidth, setPanelWidth] = useState(390);
+  const dragStart = useRef<{ x: number; width: number } | null>(null);
+
+  function resizePanel(width: number) {
+    setPanelWidth(Math.min(580, Math.max(300, width)));
+  }
 
   const mapElement = useRef<HTMLDivElement>(null);
   const leafletMap = useRef<L.Map | null>(null);
 
   const selectedRequest =
     requests.find((request) => request.id === selectedRequestId)
-    ?? requests[0];
+    ?? null;
 
   const visibleRequests = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -47,26 +54,18 @@ export default function ExploreTasks({
     if (!mapElement.current) return;
 
     const map = L.map(mapElement.current, {
-      maxBounds: L.latLngBounds(
-        [42.342, -71.126],
-        [42.378, -71.062]
-      ),
-      maxBoundsViscosity: 1,
       minZoom: 14,
       zoomControl: false,
     }).setView(CAMBRIDGE_CENTER, 16);
 
-    L.tileLayer(
-      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
-      {
-        attribution: "Tiles &copy; Esri",
-        maxZoom: 19,
-      }
-    ).addTo(map);
+    L.tileLayer(MAP_TILE_URL, MAP_TILE_OPTIONS).addTo(map);
+    const resizeObserver = new ResizeObserver(() => map.invalidateSize({ debounceMoveend: true }));
+    resizeObserver.observe(mapElement.current);
 
     leafletMap.current = map;
 
     return () => {
+      resizeObserver.disconnect();
       map.remove();
       leafletMap.current = null;
     };
@@ -109,6 +108,7 @@ export default function ExploreTasks({
           iconAnchor: [35, 44],
         }),
         title: request.title,
+        alt: `${request.title} · ${request.price}`,
       })
         .addTo(map)
         .on("click", () => {
@@ -139,8 +139,9 @@ export default function ExploreTasks({
   }
 
   return (
-    <main className="relative h-[calc(100vh-64px)] overflow-hidden">
-      <div className="absolute inset-0 lg:right-[390px]">
+    <main className="explore-layout relative overflow-hidden"
+      style={{ "--request-panel-width": `${panelWidth}px` } as CSSProperties}>
+      <div className="explore-map relative min-w-0">
         <div
           ref={mapElement}
           className="absolute inset-0 z-0"
@@ -174,7 +175,31 @@ export default function ExploreTasks({
         </div>
       </div>
 
-      <aside className="absolute inset-y-0 right-0 z-20 flex w-full flex-col border-l border-[#BED8D4] bg-[#F7F9F9] sm:w-[390px]">
+      <div className="request-panel-divider" role="separator" tabIndex={0}
+        title="Drag to resize" aria-label="Resize request panel" aria-controls="request-panel" aria-orientation="vertical"
+        aria-valuemin={300} aria-valuemax={580} aria-valuenow={panelWidth}
+        onPointerDown={(event) => {
+          if (event.button !== 0) return;
+          const panel = event.currentTarget.nextElementSibling;
+          if (!panel) return;
+          dragStart.current = { x: event.clientX, width: panel.getBoundingClientRect().width };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          const start = dragStart.current;
+          if (start) resizePanel(start.width + start.x - event.clientX);
+        }}
+        onLostPointerCapture={() => { dragStart.current = null; }}
+        onKeyDown={(event) => {
+          const widths: Record<string, number> = {
+            ArrowLeft: panelWidth + 20, ArrowRight: panelWidth - 20, Home: 300, End: 580,
+          };
+          if (!Object.hasOwn(widths, event.key)) return;
+          event.preventDefault();
+          resizePanel(widths[event.key]);
+        }}
+      />
+      <aside id="request-panel" className="request-panel z-20 flex min-h-0 flex-col border-[#BED8D4] bg-[#F7F9F9]">
         <div className="border-b border-[#BED8D4] px-5 pb-4 pt-5">
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-extrabold">
@@ -185,21 +210,21 @@ export default function ExploreTasks({
             </span>
           </div>
 
-          <div className="mt-4 flex gap-2 overflow-x-auto pb-1">
-            {[...categories, "Uncategorized"].map((item) => (
-              <button
-                key={item}
-                onClick={() => setCategory(item)}
-                className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold ${
-                  category === item
-                    ? "border-[#2081C3] bg-[#2081C3] text-white"
-                    : "border-[#BED8D4] text-slate-600"
-                }`}
-              >
-                {item}
-              </button>
-            ))}
-          </div>
+          <label className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm font-semibold">
+            Category
+            <select
+              value={category}
+              onChange={(event) => {
+                setCategory(event.target.value);
+                setRequestOpen(false);
+              }}
+              className="min-w-0 flex-1 rounded-md border border-[#BED8D4] bg-white px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-[#08679e]"
+            >
+              {[...categories, "Uncategorized"].map((item) => (
+                <option key={item} value={item}>{item === "All" ? "All categories" : item}</option>
+              ))}
+            </select>
+          </label>
         </div>
 
         <div className="flex-1 space-y-3 overflow-y-auto p-4">
@@ -233,10 +258,12 @@ export default function ExploreTasks({
             </button>
           ))}
 
-          {visibleRequests.length === 0 && (
+          {requests.length === 0 && (
+            <p className="px-4 py-12 text-center text-sm text-slate-500">No requests yet. Post one to add a pin to the map.</p>
+          )}
+          {requests.length > 0 && visibleRequests.length === 0 && (
             <p className="px-4 py-12 text-center text-sm text-slate-500">
-              No requests to display. Make sure you’re logged in
-              and have selected All.
+              No requests match these filters.
             </p>
           )}
         </div>

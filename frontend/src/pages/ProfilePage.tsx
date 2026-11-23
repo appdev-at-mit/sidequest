@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
+import PostRequestDialog from "../components/PostRequestDialog";
 import { useAuth } from "../AuthContext";
 
 type UserProfile = {
@@ -18,26 +19,15 @@ type PostedRequest = {
 };
 
 
-export default function ProfilePage() {
+export default function ProfilePage({ onSignedOut }: { onSignedOut: () => void }) {
   const {isLoggedIn, setIsLoggedIn} = useAuth();
-  const [kerb, setKerb] = useState("");
-  const [password, setPassword] = useState("");
-  const [loginError, setLoginError] = useState("");
   const [profileTab, setProfileTab] = useState<"Posted" | "Completed">("Completed");
-  const [showLogin, setShowLogin] = useState(false);
 
-  const [isSignup, setIsSignup] = useState(false);
-  const [name, setName] = useState("");
 
   const [profile, setProfile] = useState<UserProfile | null>(null);
 
   const [showRequest, setShowRequest] = useState(false);
-  const [description, setDescription] = useState("");
-  const [pay, setPay] = useState("");
-  const [requestMessage, setRequestMessage] = useState("");
 
-  const [start, setStart] = useState("");
-  const [end, setEnd] = useState("");
 
   const [postedRequests, setPostedRequests] = useState<PostedRequest[]>([]);
   const [requestsLoading, setRequestsLoading] = useState(false);
@@ -102,50 +92,6 @@ export default function ProfilePage() {
     };
   }, [isLoggedIn, requestsVersion]);
 
-  async function handlePostRequest() {
-    setRequestMessage("");
-
-    const amount = Number(pay);
-
-    if (!description.trim() || !Number.isFinite(amount) || amount <= 0) {
-      setRequestMessage("Enter a description and a payment above zero.");
-      return;
-    }
-
-    try {
-      if (!start || !end || new Date(end) <= new Date(start)) {
-        setRequestMessage("Choose a deadline after the start time.");
-        return;
-      } 
-
-
-      const response = await fetch("/api/post-request", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-        description: description.trim(),
-        pay: amount,
-        start: new Date(start).toISOString(),
-        end: new Date(end).toISOString(),
-      }),
-      });
-
-      if (!response.ok) {
-        setRequestMessage("Could not post request.");
-        return;
-      }
-
-      setRequestMessage("Request posted!");
-      setRequestsVersion((version) => version + 1);
-      setProfileTab("Posted");
-      setDescription("");
-      setPay("");
-    } catch {
-      setRequestMessage("Could not reach the server.");
-    }
-  }
-
-
 useEffect(() => {
   if (!isLoggedIn) {
     setProfile(null);
@@ -171,56 +117,6 @@ useEffect(() => {
 }, [isLoggedIn]);
 
 
-  async function handleLogin() {
-  setLoginError("");
-
-  try {
-    const response = await fetch(
-      isSignup ? "/api/signup" : "/api/login",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          isSignup
-            ? { kerb, name, password }
-            : { kerb, password } 
-        ),
-      }
-    );
-
-    if (!response.ok) {
-      setLoginError(
-        isSignup
-          ? "Could not create account. Try a different username."
-          : "Login failed. Check your username and password."
-      );
-      return;
-    }
-
-    if (isSignup) {
-      // Your backend creates the account without logging in.
-      setIsSignup(false);
-      setPassword("");
-      setLoginError("Account created! Log in with your new account.");
-      return;
-    }
-
-    const statusResponse = await fetch("/api/auth-status");
-    const status = await statusResponse.json();
-
-    if (!status.isLoggedIn) {
-      setLoginError("Login succeeded, but the session was not retained.");
-      return;
-    }
-
-    setIsLoggedIn(true);
-    setShowLogin(false);
-    setPassword("");
-  } catch {
-    setLoginError("Could not reach the server.");
-  }
-}
-
 async function handleLogout() {
   try {
     const response = await fetch("/api/logout", {
@@ -232,103 +128,13 @@ async function handleLogout() {
       return;
     }
 
+    onSignedOut();
     setIsLoggedIn(false);
   } catch {
     alert("Could not reach the server.");
   }
 }
 
-
-
-  // if user is not logged in
-  if (!isLoggedIn) {
-  return (
-    <div>
-      <button onClick={() => setShowLogin(true)}>
-        Log in
-      </button>
-
-      {showLogin && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="login-title"
-            className="w-full max-w-sm rounded-xl bg-white p-6"
-          >
-            <h2 id="login-title" className="mb-4 text-xl font-bold">
-              {isSignup ? "Create account" : "Log in"}
-            </h2>
-
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                handleLogin();
-              }}
-              className="flex flex-col gap-3"
-            >
-
-              {isSignup && (
-                <input
-                  placeholder="Your name"
-                  aria-label="Your name"
-                  autoComplete="name"
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  className="rounded border p-2"
-                  required
-                />
-              )}
-
-              <input
-                placeholder="Kerb / username"
-                aria-label="Username"
-                autoComplete="username"
-                value={kerb}
-                onChange={(event) => setKerb(event.target.value)}
-                className="rounded border p-2"
-                required
-              />
-
-              <input
-                type="password"
-                placeholder="Password"
-                aria-label="Password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                className="rounded border p-2"
-                required
-              />
-
-              {loginError && <p role="alert">{loginError}</p>}
-
-              <button type="submit" className="rounded bg-blue-600 p-2 text-white">
-                {isSignup ? "Create account" : "Log in"}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setIsSignup(!isSignup);
-                  setLoginError("");
-                }}
-              >
-                {isSignup
-                  ? "Already have an account? Log in"
-                  : "Create an account"}
-              </button>
-            </form>
-
-            <button onClick={() => setShowLogin(false)}>
-              Close
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 
   return (
@@ -441,97 +247,17 @@ async function handleLogout() {
                   ))
                 )}
               </div>
-              <button
-  onClick={() => {
-    setRequestMessage("");
-    setShowRequest(true);
-  }}
-  className="rounded bg-blue-600 px-4 py-2 text-white"
->
-  Post a request
-</button>
-
-  {showRequest && (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="request-title"
-        className="w-full max-w-sm rounded-xl bg-white p-6"
-      >
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            handlePostRequest();
-          }}
-          className="flex flex-col gap-3"
-        >
-          <h2 id="request-title" className="text-xl font-bold">
-            Post a request
-          </h2>
-
-          <input
-            placeholder="What do you need help with?"
-            aria-label="Request description"
-            value={description}
-            onChange={(event) => setDescription(event.target.value)}
-            className="rounded border p-2"
-            required
-          />
-
-          <input
-            type="number"
-            min="0.01"
-            step="0.01"
-            placeholder="Payment in dollars"
-            aria-label="Payment in dollars"
-            value={pay}
-            onChange={(event) => setPay(event.target.value)}
-            className="rounded border p-2"
-            required
-          />
-
-          {requestMessage && <p role="status">{requestMessage}</p>}
-          
-          <label>
-            Starts at
-            <input
-              type="datetime-local"
-              value={start}
-              onChange={(event) => setStart(event.target.value)}
-              className="block w-full rounded border p-2"
-              required
-            />
-          </label>
-
-          <label>
-            Deadline
-            <input
-              type="datetime-local"
-              value={end}
-              onChange={(event) => setEnd(event.target.value)}
-              className="block w-full rounded border p-2"
-              required
-            />
-          </label>
-
-          <button
-            type="submit"
-            className="rounded bg-blue-600 p-2 text-white"
-          >
-            Post request
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setShowRequest(false)}
-          >
-            Close
-          </button>
-        </form>
-      </div>
-    </div>
-  )}
+              <button onClick={() => setShowRequest(true)}
+                className="mt-4 rounded-lg bg-[#08679e] px-4 py-2 text-sm font-bold text-white">
+                Post a request
+              </button>
+              {showRequest && (
+                <PostRequestDialog onClose={() => setShowRequest(false)} onPosted={() => {
+                  setShowRequest(false);
+                  setProfileTab("Posted");
+                  setRequestsVersion((version) => version + 1);
+                }} />
+              )}
             </section>
           </div>
         </main>

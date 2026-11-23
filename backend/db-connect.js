@@ -20,16 +20,10 @@ class DBController {
         const found = await this.requests.find();
         return found.toArray();
     }
-    async postRequest(body) {
-        await this.requests.insertOne({
-            requester: body.requester,
-            description: body.description,
-            pay: body.pay,
-            start: body.start,
-            end: body.end,
-            helper: null,
-            status: 0
-        })
+    async postRequest(request) {
+        const document = { ...request, helper: null, status: 0 };
+        const { insertedId } = await this.requests.insertOne(document);
+        return { ...document, _id: insertedId };
     }
     async connectRequest(_id, helper) {
         const request = await this.requests.findOne({_id});

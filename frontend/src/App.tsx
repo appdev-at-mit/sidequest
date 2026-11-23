@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import ExploreTasks from "./pages/ExploreTasks";
 import ActiveQuest from "./pages/ActiveQuest";
 import ProfilePage from "./pages/ProfilePage";
+import SignIn from "./pages/SignIn";
+import PostRequestDialog from "./components/PostRequestDialog";
 import CompleteQuest from "./pages/CompleteQuest";
 import Icon from "./components/Icon";
 import Logo from "./components/Logo";
@@ -17,9 +19,12 @@ export default function App() {
     const savedTheme = localStorage.getItem("sidequest-theme");
     if (savedTheme === "light" || savedTheme === "dark") return savedTheme;
     return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  });  const [page, setPage] = useState<Page>("explore");
+  });
+  const [page, setPage] = useState<Page>("explore");
   const [menuOpen, setMenuOpen] = useState(false);
-  const { isLoggedIn } = useAuth();
+  const { isLoggedIn, checkingSession } = useAuth();
+  const [postingRequest, setPostingRequest] = useState(false);
+  const [requestsVersion, setRequestsVersion] = useState(0);
   const [requests, setRequests] = useState<Request[]>([]);
   const [requestsError, setRequestsError] = useState("");
   const [selectedRequestId, setSelectedRequestId] = useState<string | number>("");
@@ -59,6 +64,8 @@ export default function App() {
         description: string;
         pay: number;
         requester: string | null;
+        lat?: number;
+        lng?: number;
       };
 
       const loaded: Request[] = result.data.map(
@@ -72,11 +79,12 @@ export default function App() {
           }).format(request.pay),
           poster: request.requester ?? "Unknown user",
           category: "Uncategorized",
-          location: "Location not provided",
+          location: request.lat != null && request.lng != null
+            ? "Location shown on the map" : "Location not provided",
           distance: "",
           posted: "",
-          lat: null,
-          lng: null,
+          lat: request.lat ?? null,
+          lng: request.lng ?? null,
         })
       );
 
@@ -93,12 +101,17 @@ export default function App() {
   return () => {
     cancelled = true;
   };
-}, [isLoggedIn, page]);
+}, [isLoggedIn, page, requestsVersion]);
 
   function navigate(next: Page) {
     setPage(next);
     setMenuOpen(false);
   }
+  if (checkingSession) {
+    return <main className="sign-in"><div className="sign-in-brand"><Logo /></div><p className="sign-in-loading" role="status">Loading SideQuest…</p></main>;
+  }
+  if (!isLoggedIn) return <SignIn />;
+
   return (
     <div className={`theme-${theme} min-h-screen bg-[#F7F9F9] text-[#102A3A]`}>
       <header className="relative z-50 h-16 border-b border-[#BED8D4] bg-[#F7F9F9]">
@@ -143,6 +156,13 @@ export default function App() {
           >
             <Icon name={theme === "light" ? "moon" : "sun"} size={19} />
           </button>
+          {page === "explore" && (
+            <button onClick={() => setPostingRequest(true)} aria-label="Post a request"
+              className="flex shrink-0 items-center gap-1.5 rounded-lg bg-[#08679e] px-3 py-2 text-sm font-bold text-white hover:bg-[#075785]">
+              <span aria-hidden="true" className="text-base leading-none">+</span>
+              <span className="hidden min-[390px]:inline">Post request</span>
+            </button>
+          )}
           <button onClick={() => navigate("profile")} aria-label="View profile">
             <Avatar initials="JD" />
           </button>
@@ -192,6 +212,13 @@ export default function App() {
           ))}
         </div>
       </aside>
+      {page === "explore" && postingRequest && (
+        <PostRequestDialog onClose={() => setPostingRequest(false)} onPosted={() => {
+          setPostingRequest(false);
+          setQuery("");
+          setRequestsVersion((version) => version + 1);
+        }} />
+      )}
       {page === "explore" && (
   <>
     {requestsError && <p role="alert">{requestsError}</p>}
@@ -225,9 +252,7 @@ export default function App() {
     onBack={() => navigate("explore")}
   />
 )}
-      {page === "active" && <ActiveQuest selectedRequest={selectedRequest} stage={stage} setStage={setStage} onBack={() => navigate("explore")} onComplete={() => navigate("complete")} />}
-      {page === "profile" && <ProfilePage />}
-      {page === "complete" && <CompleteQuest selectedRequest={selectedRequest} onBack={() => navigate("explore")} />}
+      {page === "profile" && <ProfilePage onSignedOut={() => navigate("explore")} />}
     </div>
   );
 }

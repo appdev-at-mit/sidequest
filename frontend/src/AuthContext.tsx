@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 type AuthContextType = {
   isLoggedIn: boolean;
+  checkingSession: boolean;
   setIsLoggedIn: (value: boolean) => void;
 };
 
@@ -11,28 +12,29 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
 
+  const [checkingSession, setCheckingSession] = useState(true);
+
   useEffect(() => {
+    const controller = new AbortController();
+
     async function checkLogin() {
       try {
-        const response = await fetch("/api/auth-status");
-
-        if (!response.ok) {
-          throw new Error("Could not check login");
-        }
-
-        const data = await response.json();
-        setIsLoggedIn(data.isLoggedIn);
-      } catch (error) {
-        console.error(error);
-        setIsLoggedIn(false);
+        const response = await fetch("/api/auth-status", { signal: controller.signal });
+        const data = response.ok ? await response.json() : null;
+        if (!controller.signal.aborted) setIsLoggedIn(data?.isLoggedIn === true);
+      } catch {
+        if (!controller.signal.aborted) setIsLoggedIn(false);
+      } finally {
+        if (!controller.signal.aborted) setCheckingSession(false);
       }
     }
 
-    checkLogin();
+    void checkLogin();
+    return () => controller.abort();
   }, []);
 
   return (
-    <AuthContext.Provider value={{ isLoggedIn, setIsLoggedIn }}>
+    <AuthContext.Provider value={{ isLoggedIn, checkingSession, setIsLoggedIn }}>
       {children}
     </AuthContext.Provider>
   );

@@ -3,11 +3,11 @@ import type { FormEvent } from "react";
 import L from "leaflet";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
-import { CAMBRIDGE_CENTER } from "../data/requests";
+import { CAMBRIDGE_CENTER, MAP_TILE_URL, MAP_TILE_OPTIONS } from "../data/requests";
 import type { Request } from "../data/requests";
 type Props = { selectedRequest: Request; stage: 1 | 2; setStage: (stage: 1 | 2) => void; onBack: () => void; onComplete: () => void };
 export default function ActiveQuest({selectedRequest, stage, setStage, onBack, onComplete}: Props) {
-  const [routeDetails, setRouteDetails] = useState({ minutes: 12, miles: 0.6 });
+  const [routeDetails, setRouteDetails] = useState<{ minutes: number; miles: number } | null>(null);
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState([
     { from: "Maya", text: "Hi Jordan! Thanks for accepting. The sofa is in the lobby.", time: "10:42 AM" },
@@ -19,20 +19,15 @@ export default function ActiveQuest({selectedRequest, stage, setStage, onBack, o
   useEffect(() => {
     if (!routeMapElement.current || routeMap.current) return;
 
+    const { lat, lng } = selectedRequest;
+    const destination: L.LatLngTuple | null = lat != null && lng != null ? [lat, lng] : null;
     const map = L.map(routeMapElement.current, {
       attributionControl: true,
       minZoom: 14,
       zoomControl: false,
-    });
+    }).setView(CAMBRIDGE_CENTER, 16);
 
-    L.tileLayer(
-      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
-      {
-        attribution:
-          "Tiles &copy; Esri &mdash; Source: Esri, HERE, Garmin, USGS, Intermap, INCREMENT P, OpenStreetMap contributors",
-        maxZoom: 19,
-      },
-    ).addTo(map);
+    L.tileLayer(MAP_TILE_URL, MAP_TILE_OPTIONS).addTo(map);
 
     const userIcon = L.divIcon({
       className: "route-user-marker",
@@ -52,23 +47,28 @@ export default function ActiveQuest({selectedRequest, stage, setStage, onBack, o
       title: "Your location",
       zIndexOffset: 1000,
     }).addTo(map);
-    L.marker([selectedRequest.lat, selectedRequest.lng], {
+    routeMap.current = map;
+    const resizeObserver = new ResizeObserver(() => map.invalidateSize({ debounceMoveend: true }));
+    resizeObserver.observe(routeMapElement.current);
+    const controller = new AbortController();
+
+    function cleanup() {
+      controller.abort();
+      resizeObserver.disconnect();
+      map.remove();
+      routeMap.current = null;
+    }
+
+    if (!destination) return cleanup;
+
+    L.marker(destination, {
       icon: destinationIcon,
       title: selectedRequest.title,
       zIndexOffset: 900,
-    })
-      .addTo(map)
-      .bindTooltip(selectedRequest.title, { direction: "top", offset: [0, -44] });
+    }).addTo(map);
+    map.fitBounds(L.latLngBounds(CAMBRIDGE_CENTER, destination), { padding: [70, 70], maxZoom: 17 });
 
-    const bounds = L.latLngBounds(CAMBRIDGE_CENTER, [
-      selectedRequest.lat,
-      selectedRequest.lng,
-    ]);
-    map.fitBounds(bounds, { padding: [70, 70], maxZoom: 17 });
-    routeMap.current = map;
-
-    const controller = new AbortController();
-    const coordinates = `${CAMBRIDGE_CENTER[1]},${CAMBRIDGE_CENTER[0]};${selectedRequest.lng},${selectedRequest.lat}`;
+    const coordinates = `${CAMBRIDGE_CENTER[1]},${CAMBRIDGE_CENTER[0]};${destination[1]},${destination[0]}`;
     fetch(
       `https://routing.openstreetmap.de/routed-foot/route/v1/driving/${coordinates}?overview=full&geometries=geojson&steps=false`,
       { signal: controller.signal },
@@ -79,7 +79,7 @@ export default function ActiveQuest({selectedRequest, stage, setStage, onBack, o
       })
       .then((data) => {
         const route = data.routes?.[0];
-        if (!route || !routeMap.current) return;
+        if (!route || controller.signal.aborted) return;
         const points = route.geometry.coordinates.map(
           ([lng, lat]: [number, number]) => [lat, lng] as L.LatLngTuple,
         );
@@ -89,22 +89,22 @@ export default function ActiveQuest({selectedRequest, stage, setStage, onBack, o
           opacity: 0.92,
           lineCap: "round",
           lineJoin: "round",
-        }).addTo(routeMap.current);
+        }).addTo(map);
         const routeLine = L.polyline(points, {
           color: "#2081C3",
           weight: 6,
           opacity: 0.95,
           lineCap: "round",
           lineJoin: "round",
-        }).addTo(routeMap.current);
+        }).addTo(map);
         L.polyline(points, {
           color: "#78D5D7",
           weight: 2,
           opacity: 0.9,
           dashArray: "2 12",
           lineCap: "round",
-        }).addTo(routeMap.current);
-        routeMap.current.fitBounds(routeLine.getBounds(), {
+        }).addTo(map);
+        map.fitBounds(routeLine.getBounds(), {
           paddingTopLeft: [60, 60],
           paddingBottomRight: [60, 110],
           maxZoom: 17,
@@ -115,22 +115,18 @@ export default function ActiveQuest({selectedRequest, stage, setStage, onBack, o
         });
       })
       .catch((error) => {
-        if (error.name !== "AbortError") {
+        if (error.name !== "AbortError" && !controller.signal.aborted) {
           L.polyline(
             [
               CAMBRIDGE_CENTER as L.LatLngTuple,
-              [selectedRequest.lat, selectedRequest.lng],
+              destination,
             ],
             { color: "#2081C3", weight: 5, opacity: 0.85, dashArray: "7 8" },
           ).addTo(map);
         }
       });
 
-    return () => {
-      controller.abort();
-      map.remove();
-      routeMap.current = null;
-    };
+    return cleanup;
   }, [selectedRequest]);
   function sendMessage(event: FormEvent) {
     event.preventDefault();
@@ -194,8 +190,12 @@ export default function ActiveQuest({selectedRequest, stage, setStage, onBack, o
                 <Icon name="walk" size={21} />
               </span>
               <div className="ml-3">
-                <p className="font-extrabold">~{routeDetails.minutes} min</p>
-                <p className="mt-0.5 text-xs text-slate-500">{routeDetails.miles} mi</p>
+                {routeDetails ? (
+                  <>
+                    <p className="font-extrabold">~{routeDetails.minutes} min</p>
+                    <p className="mt-0.5 text-xs text-slate-500">{routeDetails.miles} mi</p>
+                  </>
+                ) : <p className="text-xs text-slate-500">Route estimate unavailable</p>}
               </div>
               <button className="ml-auto text-sm font-bold text-[#2081C3] hover:underline">
                 Directions
