@@ -7,6 +7,7 @@ import session from "express-session";
 import argon2 from "argon2";
 import dotenv from "dotenv";
 import MongoStore from "connect-mongo";
+import path from "path";
 dotenv.config();
 
 const app = express();
@@ -40,6 +41,8 @@ app.use((req, res, next) => {
 
     next();
 });
+
+app.use(express.static(path.resolve("../frontend/dist")));
 
 
 passport.use(new LocalStrategy({usernameField: "kerb"},
@@ -179,12 +182,6 @@ const db = new DBController();
         })
     })
 
-    app.get("/", async (req, res) => {
-        res.status(200).send("<b>Hello world</b>", {
-            "Content-type": "text/html"
-        })
-    })
-
      app.get("/api/profile", (req, res) => {
         if (!req.isAuthenticated()) {
             return res.status(401).json({
@@ -241,6 +238,76 @@ const db = new DBController();
             next(error);
         }
     });
+
+    app.post("/api/connect-request", async (req, res) => {
+        if (!req.isAuthenticated()) {
+            res.status(401).json({
+                result: "fail",
+                msg: "You need to log in first"
+            })
+            return;
+        }
+        try {
+            const _id = req.body._id;
+            await db.connectRequest(_id, req.body.helper);
+            res.status(200).json({
+                result: "success",
+                msg: "connected request to " + req.body.helper
+            })
+        } catch (e) {
+            res.status(400).json({
+                result: "fail",
+                msg: "Bad request"
+            })
+        }
+    })
+    app.post("/api/resolve-request", async (req, res) => {
+        if (!req.isAuthenticated()) {
+            res.status(401).json({
+                result: "fail",
+                msg: "You need to log in first"
+            })
+            return;
+        }
+        try {
+            const _id = req.body._id;
+            await db.resolveRequest(_id);
+            res.status(200).json({
+                result: "success",
+                msg: "resolved request"
+            })
+        } catch (e) {
+            res.status(400).json({
+                result: "fail",
+                msg: "Bad request"
+            })
+        }
+    })
+    app.post("/api/rate-user", async (req, res) => {
+        if (!req.isAuthenticated()) {
+            res.status(401).json({
+                result: "fail",
+                msg: "You need to log in first"
+            })
+            return;
+        }
+        try {
+            await db.rateUser(req.body.kerb, req.user.kerb, req.body.rating);
+            res.status(200).json({
+                result: "success",
+                msg: "rated" + req.body.rating
+            })
+        } catch (e) {
+            res.status(400).json({
+                result: "fail",
+                msg: "Bad request"
+            })
+        }
+    })
+
+    app.get("/", async (req, res) => {
+        res.status(200).sendFile(path.resolve("../frontend/index.html"));
+    })
 
     app.listen(3000);
 })();

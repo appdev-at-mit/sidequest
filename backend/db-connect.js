@@ -26,23 +26,66 @@ class DBController {
             description: body.description,
             pay: body.pay,
             start: body.start,
-            end: body.end
+            end: body.end,
+            helper: null,
+            status: 0
         })
+    }
+    async connectRequest(_id, helper) {
+        const request = await this.requests.findOne({_id});
+        if (request.helper === null) {
+            await this.requests.updateOne({_id}, {$set:{helper, status:1}});
+        }
+    }
+    async resolveRequest(_id) {
+        const request = await this.requests.findOne({_id});
+        if (request.helper !== null) {
+            await this.requests.updateOne({_id}, {$set:{status:2}});
+            const kerb = request.helper;
+            const user = await this.findUser(kerb);
+            await this.users.updateOne({kerb}, {$set: {
+                quests: user.quests + 1,
+                earned: user.earned + request.pay
+            }})
+        }
     }
     async signup(kerb, name, password) {
     await this.users.insertOne({
             kerb,
             name,
+            bio: "",
             password,
             createdAt: new Date(),
             strikes: 0,
-            blocked: []
+            earned: 0,
+            quests: 0,
+            blocked: [],
+            hasReviewed: {},
+            hasGottenReviewed: {},
+            pfp: null
         });
     }
     async findUser(kerb) {
         return await this.users.findOne({
             kerb
         })
+    }
+    async findUserPublic(kerb) {
+        const user = await findUser(kerb);
+        delete user.password, user.blocked, user.hasReviewed;
+        return user;
+    }
+    async rateUser(kerb, raterKerb, rating) {
+        const user = await this.users.findOne({kerb});
+        const rater = await this.users.findOne({raterKerb});
+        user.hasGottenReviewed[`review-${raterKerb}`] = rating;
+        rater.hasReviewed[`review-${kerb}`] = rating;
+        await this.users.updateOne({raterKerb}, {$set:{hasReviewed: user.hasReviewed}});
+        await this.users.updateOne({kerb}, {$set:{hasGottenReviewed: user.hasGottenReviewed}});
+    }
+    async strike(kerb) {
+        const user = await this.users.findOne({kerb});
+        await this.users.updateOne({kerb}, {$set:{strikes: user.strikes + 1}});
     }
     async toggleBlock(kerb, dest) {
         const user = await this.users.findOne({
