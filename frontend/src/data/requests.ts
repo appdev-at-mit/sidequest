@@ -4,13 +4,26 @@ export type Request = {
   category: string;
   title: string;
   location: string;
-  price: string;
+  reward: string;
   distance: string;
   description: string;
   posted: string;
   lat: number | null;
   lng: number | null;
   poster: string;
+  start?: string | null;
+  end?: string | null;
+  pickup?: string | null;
+  dropoff?: string | null;
+  createdAt?: string | null;
+  expiresAt?: string | null;
+  expired?: boolean;
+  rating?: number | null;
+  imageUrl?: string | null;
+  status?: number;
+  questStage?: number;
+  helper?: string | null;
+  requester?: string | null;
 };
 
 export const mapRequests: Request[] = [
@@ -19,7 +32,7 @@ export const mapRequests: Request[] = [
     category: "Moving",
     title: "Help move a sofa upstairs",
     location: "450 Massachusetts Ave, Cambridge",
-    price: "$85",
+    reward: "85.00",
     distance: "0.4 mi",
     description:
       "I need one person to help carry a three-seat sofa from the lobby to my third-floor apartment. It should take about an hour, and I’ll be there to help.",
@@ -33,7 +46,7 @@ export const mapRequests: Request[] = [
     category: "Delivery",
     title: "Pick up a desk from IKEA",
     location: "Kendall Square, Cambridge",
-    price: "$55",
+    reward: "55.00",
     distance: "1.1 mi",
     description:
       "Pick up a flat-packed desk and deliver it to my apartment. It should fit in a standard SUV or larger vehicle.",
@@ -47,7 +60,7 @@ export const mapRequests: Request[] = [
     category: "Home Help",
     title: "Mount two living room shelves",
     location: "Cambridgeport, Cambridge",
-    price: "$70",
+    reward: "70.00",
     distance: "0.8 mi",
     description:
       "Looking for someone with tools and experience to securely mount two floating shelves on a drywall surface.",
@@ -61,7 +74,7 @@ export const mapRequests: Request[] = [
     category: "Academic",
     title: "Review my calculus problem set",
     location: "77 Massachusetts Ave, Cambridge",
-    price: "$32",
+    reward: "32.00",
     distance: "0.2 mi",
     description:
       "I’d love a second set of eyes on my calculus problem set before tomorrow. Looking for help checking my work, not doing it for me.",
@@ -75,7 +88,7 @@ export const mapRequests: Request[] = [
     category: "Tech",
     title: "Set up a new Wi-Fi router",
     location: "Central Square, Cambridge",
-    price: "$40",
+    reward: "40.00",
     distance: "1.3 mi",
     description:
       "Help connect and configure a new Wi-Fi router in my apartment, including reconnecting three existing devices.",

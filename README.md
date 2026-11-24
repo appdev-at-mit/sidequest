@@ -1,111 +1,13 @@
-<<<<<<< HEAD
-# Backend
+# SideQuest
 
-So basically, you should now be able to integrate this with whatever part of the frontend you are working on. The following API endpoints are implemented:
+SideQuest is a React and TypeScript app with an Express API and MongoDB persistence.
 
-- `/api/signup` (POST): supply `kerb`, `name`, `password` in your request, creates a new user with these credentials, but does not log in. `kerb` must not appear elsewhere in the database.
+## Local development
 
-- `/api/login` (POST): supply `kerb`, `password`, logs in to the user with kerb equal to `kerb` if the password is correct. Saves a session for future requests.
+Install Node.js and Docker, start the local MongoDB replica set with `docker compose up -d --wait`, then configure `MONGODB_URI` and a strong random `SECRET` in `backend/.env`. Start the API with `npm start` from `backend` and the frontend with `npm run dev` from `frontend`.
 
-- `/api/logout` (DELETE): logs out of current session.
+## Stripe Connect setup
 
-- `/api/get-all-requests` (GET): returns, in a rather crude JSON format, all requests in the database. Must be logged in.
+The wallet uses Stripe hosted onboarding for connected account setup. SideQuest does not collect or store bank or card details. Add `STRIPE_SECRET_KEY` and `APP_BASE_URL` to the backend environment to enable onboarding. Use a Stripe test secret while developing and the HTTPS production site URL for `APP_BASE_URL` in production. Never expose the secret key in frontend code or commit it.
 
-- `/api/post-request` (POST): supply `requester`, `description`, `pay`, `start`, `end` (requester's kerb, description, how much money you would pay, start location, end location), adds a new request to the database. Must be logged in.
-
-- `/api/toggle-block` (POST): supply `dest`, and blocks the user with kerb `dest` if they are not currently blocked; unblocks them if they are currently blocked. Must be logged in.
-
-How do you test this?
-
-Install Node.js and Docker. Now once you have cloned the repository locally, navigate to it in a terminal and run `docker compose up -d`.
-
-You should specify environment variables `MONGODB_URI` and `SECRET`: for `MONGODB_URI`, set it to `mongodb://127.0.0.1:27017/myapp_dev`. `SECRET` should be set to some cryptographically secure string, for instance you can obtain one by running `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"` in your terminal.
-
-Finally, run `node api.js` in your terminal. This will start the server locally. You can now access the root via `localhost:3000`. If you want to specify a new frontend page, do something like:
-
-```
-app.get(URL, async (req, res) => {
-  res.status(200).send(HTML_CODE, {
-    "Content-type": "text/html"
-  })
-})
-```
-
-in `api.js`
-=======
-# React + TypeScript + Vite
-
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
-
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
-```
-
-You can also install [eslint-plugin-react-x](https://npmx.dev/package/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://npmx.dev/package/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
-```
->>>>>>> origin/real-project
+The current integration creates Express connected accounts with the transfers capability and opens Stripe's account onboarding. Live quest payment collection, release, refunds, disputes, and transfers are not wired yet. PayPal, Venmo, Cash App, and card selections are currently saved as preferences only.

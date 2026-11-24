@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import Icon from "../components/Icon";
-import Avatar from "../components/Avatar";
-import { categories, CAMBRIDGE_CENTER, MAP_TILE_URL, MAP_TILE_OPTIONS } from "../data/requests";
+import QuestCountdown from "../components/QuestCountdown";
+import { CAMBRIDGE_CENTER, MAP_TILE_URL, MAP_TILE_OPTIONS } from "../data/requests";
 import type { Request } from "../data/requests";
 import "./ExploreTasks.css";
 
@@ -21,14 +21,9 @@ export default function ExploreTasks({
   setSelectedRequestId,
   onAccept,
 }: Props) {
-  const [category, setCategory] = useState("All");
   const [requestOpen, setRequestOpen] = useState(false);
-  const [panelWidth, setPanelWidth] = useState(390);
-  const dragStart = useRef<{ x: number; width: number } | null>(null);
-
-  function resizePanel(width: number) {
-    setPanelWidth(Math.min(580, Math.max(300, width)));
-  }
+  const [mapViewVersion, setMapViewVersion] = useState(0);
+  const [clusterRequests, setClusterRequests] = useState<Request[] | null>(null);
 
   const mapElement = useRef<HTMLDivElement>(null);
   const leafletMap = useRef<L.Map | null>(null);
@@ -39,15 +34,15 @@ export default function ExploreTasks({
 
   const visibleRequests = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-
     return requests.filter(
-      (request) =>
-        (category === "All" || request.category === category) &&
+      (request) => !request.expired &&
+      (
         (!normalized ||
           request.title.toLowerCase().includes(normalized) ||
-          request.category.toLowerCase().includes(normalized))
+          request.category.toLowerCase().includes(normalized) || request.description.toLowerCase().includes(normalized))
+      )
     );
-  }, [requests, category, query]);
+  }, [requests, query]);
 
   // Create the map once.
   useEffect(() => {
@@ -61,6 +56,12 @@ export default function ExploreTasks({
     L.tileLayer(MAP_TILE_URL, MAP_TILE_OPTIONS).addTo(map);
     const resizeObserver = new ResizeObserver(() => map.invalidateSize({ debounceMoveend: true }));
     resizeObserver.observe(mapElement.current);
+    map.on("click", () => {
+      setRequestOpen(false);
+      setClusterRequests(null);
+      setSelectedRequestId("");
+    });
+    map.on("zoomend moveend", () => setMapViewVersion(version => version + 1));
 
     leafletMap.current = map;
 
@@ -78,29 +79,51 @@ export default function ExploreTasks({
 
     const markers: L.Marker[] = [];
 
-    visibleRequests.forEach((request) => {
-      if (
-        typeof request.lat !== "number" ||
-        typeof request.lng !== "number" ||
-        !Number.isFinite(request.lat) ||
-        !Number.isFinite(request.lng)
-      ) {
+    const positioned = visibleRequests.flatMap(request => {
+      if (typeof request.lat !== "number" || typeof request.lng !== "number" || !Number.isFinite(request.lat) || !Number.isFinite(request.lng)) return [];
+      return [{ request, point: map.project([request.lat, request.lng], map.getZoom()) }];
+    });
+    const groups: typeof positioned[] = [];
+    positioned.forEach(item => {
+      const group = groups.find(current => current.some(member => member.point.distanceTo(item.point) < 52));
+      if (group) group.push(item);
+      else groups.push([item]);
+    });
+
+    groups.forEach(group => {
+      const request = group[0].request;
+      if (group.length > 1) {
+        const center = L.latLng(group.reduce((sum, item) => sum + item.request.lat!, 0) / group.length, group.reduce((sum, item) => sum + item.request.lng!, 0) / group.length);
+        const clusterButton = document.createElement("button");
+        clusterButton.type = "button";
+        clusterButton.className = "sidequest-cluster-marker";
+        clusterButton.textContent = String(group.length);
+        clusterButton.setAttribute("aria-label", `${group.length} requests in this area`);
+        const marker = L.marker(center, { icon: L.divIcon({ className: "sidequest-cluster-icon", html: clusterButton, iconSize: [40, 40], iconAnchor: [20, 20] }), zIndexOffset: 1200, bubblingMouseEvents: false })
+          .addTo(map)
+          .on("click", () => {
+            setClusterRequests(group.map(item => item.request));
+            setSelectedRequestId(group[0].request.id);
+            setRequestOpen(true);
+          });
+        markers.push(marker);
         return;
       }
 
-      const priceLabel = document.createElement("span");
-      priceLabel.className =
-        "sidequest-marker__price" +
+      const countLabel = document.createElement("span");
+      countLabel.className =
+        "sidequest-marker__count" +
         (request.id === selectedRequestId ? " is-selected" : "");
-      priceLabel.textContent = request.price;
+      countLabel.textContent = "1";
 
       const stem = document.createElement("span");
       stem.className = "sidequest-marker__stem";
 
       const markerContent = document.createElement("div");
-      markerContent.append(priceLabel, stem);
+      markerContent.append(countLabel, stem);
 
       const marker = L.marker([request.lat, request.lng], {
+        bubblingMouseEvents: false,
         icon: L.divIcon({
           className: "sidequest-marker",
           html: markerContent,
@@ -108,10 +131,11 @@ export default function ExploreTasks({
           iconAnchor: [35, 44],
         }),
         title: request.title,
-        alt: `${request.title} · ${request.price}`,
+        alt: "1 quest near this location",
       })
         .addTo(map)
         .on("click", () => {
+          setClusterRequests([request]);
           setSelectedRequestId(request.id);
           setRequestOpen(true);
         });
@@ -122,25 +146,10 @@ export default function ExploreTasks({
     return () => {
       markers.forEach((marker) => marker.remove());
     };
-  }, [visibleRequests, selectedRequestId, setSelectedRequestId]);
-
-  function openRequest(request: Request) {
-    setSelectedRequestId(request.id);
-    setRequestOpen(true);
-
-    if (
-      typeof request.lat === "number" &&
-      typeof request.lng === "number" &&
-      Number.isFinite(request.lat) &&
-      Number.isFinite(request.lng)
-    ) {
-      leafletMap.current?.panTo([request.lat, request.lng]);
-    }
-  }
+  }, [visibleRequests, selectedRequestId, setSelectedRequestId, mapViewVersion]);
 
   return (
-    <main className="explore-layout relative overflow-hidden"
-      style={{ "--request-panel-width": `${panelWidth}px` } as CSSProperties}>
+    <main className="explore-layout relative isolate overflow-hidden">
       <div className="explore-map relative min-w-0">
         <div
           ref={mapElement}
@@ -175,149 +184,73 @@ export default function ExploreTasks({
         </div>
       </div>
 
-      <div className="request-panel-divider" role="separator" tabIndex={0}
-        title="Drag to resize" aria-label="Resize request panel" aria-controls="request-panel" aria-orientation="vertical"
-        aria-valuemin={300} aria-valuemax={580} aria-valuenow={panelWidth}
-        onPointerDown={(event) => {
-          if (event.button !== 0) return;
-          const panel = event.currentTarget.nextElementSibling;
-          if (!panel) return;
-          dragStart.current = { x: event.clientX, width: panel.getBoundingClientRect().width };
-          event.currentTarget.setPointerCapture(event.pointerId);
-        }}
-        onPointerMove={(event) => {
-          const start = dragStart.current;
-          if (start) resizePanel(start.width + start.x - event.clientX);
-        }}
-        onLostPointerCapture={() => { dragStart.current = null; }}
-        onKeyDown={(event) => {
-          const widths: Record<string, number> = {
-            ArrowLeft: panelWidth + 20, ArrowRight: panelWidth - 20, Home: 300, End: 580,
-          };
-          if (!Object.hasOwn(widths, event.key)) return;
-          event.preventDefault();
-          resizePanel(widths[event.key]);
-        }}
-      />
-      <aside id="request-panel" className="request-panel z-20 flex min-h-0 flex-col border-[#BED8D4] bg-[#F7F9F9]">
-        <div className="border-b border-[#BED8D4] px-5 pb-4 pt-5">
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-extrabold">
-              Requests
-            </h1>
-            <span className="rounded-full bg-[#BED8D4]/55 px-2.5 py-1 text-xs font-bold">
-              {visibleRequests.length}
-            </span>
+      {requestOpen && clusterRequests && (
+        <aside role="dialog" aria-label="Requests in this area" className="absolute inset-y-0 right-0 z-40 flex w-full max-w-[400px] flex-col border-l border-[#BED8D4] bg-[#F7F9F9] shadow-lg">
+          <div className="flex items-start justify-between gap-3 border-b border-[#BED8D4] p-5">
+            <div><p className="text-xs font-bold uppercase tracking-wide text-[#2081C3]">Map cluster</p><h2 className="mt-1 text-xl font-extrabold">{clusterRequests.length} requests nearby</h2></div>
+            <button onClick={() => { setRequestOpen(false); setClusterRequests(null); }} aria-label="Close clustered requests" className="rounded-md p-2 hover:bg-[#BED8D4]/40"><Icon name="x" size={18} /></button>
           </div>
-
-          <label className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm font-semibold">
-            Category
-            <select
-              value={category}
-              onChange={(event) => {
-                setCategory(event.target.value);
-                setRequestOpen(false);
-              }}
-              className="min-w-0 flex-1 rounded-md border border-[#BED8D4] bg-white px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-[#08679e]"
-            >
-              {[...categories, "Uncategorized"].map((item) => (
-                <option key={item} value={item}>{item === "All" ? "All categories" : item}</option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        <div className="flex-1 space-y-3 overflow-y-auto p-4">
-          {visibleRequests.map((request) => (
-            <button
-              key={request.id}
-              onClick={() => openRequest(request)}
-              className={`w-full rounded-lg border bg-white p-4 text-left shadow-sm ${
-                selectedRequestId === request.id && requestOpen
-                  ? "border-[#78D5D7]"
-                  : "border-[#BED8D4]"
-              }`}
-            >
-              <div className="flex items-start gap-3">
-                <div className="min-w-0 flex-1">
-                  <span className="text-[11px] font-bold uppercase text-[#2081C3]">
-                    {request.category}
-                  </span>
-                  <h2 className="mt-1 font-bold leading-5">
-                    {request.title}
-                  </h2>
-                  <p className="mt-2 text-xs text-slate-500">
-                    Posted by {request.poster}
-                  </p>
-                </div>
-
-                <span className="text-lg font-extrabold text-[#2081C3]">
-                  {request.price}
-                </span>
-              </div>
-            </button>
-          ))}
-
-          {requests.length === 0 && (
-            <p className="px-4 py-12 text-center text-sm text-slate-500">No requests yet. Post one to add a pin to the map.</p>
-          )}
-          {requests.length > 0 && visibleRequests.length === 0 && (
-            <p className="px-4 py-12 text-center text-sm text-slate-500">
-              No requests match these filters.
-            </p>
-          )}
-        </div>
-      </aside>
-
-      {requestOpen && selectedRequest && (
+          <div className="flex-1 divide-y divide-[#BED8D4] overflow-y-auto px-5">
+            {clusterRequests.map(request => <button key={request.id} onClick={() => { setSelectedRequestId(request.id); setClusterRequests(null); }} className="w-full py-4 text-left hover:bg-white">
+              <div className="flex items-start justify-between gap-3"><h3 className="font-extrabold">{request.title}</h3><span className="shrink-0 font-extrabold text-[#2081C3]">{request.reward}</span></div>
+              <p className="mt-1 text-[10px] text-slate-500">Posted by {request.poster}</p>
+              <p className="mt-2 line-clamp-2 text-sm text-slate-600">{request.description.slice(0, 150)}</p>
+            </button>)}
+          </div>
+        </aside>
+      )}
+      {requestOpen && selectedRequest && !clusterRequests && (
         <aside
           role="dialog"
           aria-label="Request details"
           className="absolute inset-y-0 right-0 z-40 flex w-full max-w-[400px] flex-col border-l border-[#BED8D4] bg-[#F7F9F9] shadow-lg"
         >
-          <div className="flex-1 overflow-y-auto p-6">
-            <div className="flex items-center justify-between">
-              <span className="rounded-full bg-[#BED8D4]/45 px-3 py-1.5 text-xs font-bold">
-                {selectedRequest.category}
-              </span>
-              <button
-                onClick={() => setRequestOpen(false)}
-                aria-label="Close request"
-                className="p-2"
-              >
-                <Icon name="x" size={18} />
-              </button>
-            </div>
+          <div className="relative flex-1 overflow-y-auto p-5 pt-2">
+            <button
+              onClick={() => setRequestOpen(false)}
+              aria-label="Close quest"
+              className="absolute right-3 top-2 p-2"
+            >
+              <Icon name="x" size={18} />
+            </button>
 
-            <h1 className="mt-5 text-2xl font-extrabold">
+            <h1 className="mt-0 pr-10 text-2xl font-extrabold">
               {selectedRequest.title}
             </h1>
+            <p className="mt-1 text-[8px] font-semibold text-slate-500">Posted by {selectedRequest.poster}</p>
 
-            <div className="my-6 h-px bg-[#BED8D4]" />
-
-            <div className="flex items-center gap-3">
-              <Avatar
-                initials={selectedRequest.poster.slice(0, 1)}
-              />
-              <p className="font-bold">
-                {selectedRequest.poster}
-              </p>
-            </div>
-
-            <p className="mt-7 leading-6 text-slate-600">
-              {selectedRequest.description}
+            {selectedRequest.imageUrl ? (
+              <img src={selectedRequest.imageUrl} alt={selectedRequest.title}
+                className="mt-4 h-44 w-full rounded-xl object-cover" />
+            ) : (
+              <div className="quest-preview-art mt-4" role="img" aria-label="Illustration of a bicycle and laundry basket">
+                <svg viewBox="0 0 320 150" aria-hidden="true">
+                  <circle cx="69" cy="99" r="34" fill="none" stroke="#f8f5e9" strokeWidth="7" />
+                  <circle cx="156" cy="99" r="34" fill="none" stroke="#f8f5e9" strokeWidth="7" />
+                  <path d="m69 99 43-59 44 59H69l25-36h38m-31-27h-19m80 0h19" fill="none" stroke="#2081c3" strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="m211 61 16-12 19 8 17-9 23 16-8 14-18-6-18 10-19-6-12 7-10-11Z" fill="#fff8e8" stroke="#102a3a" strokeWidth="3" strokeLinejoin="round" />
+                  <path d="M218 78h64l-7 49h-49Z" fill="#2081c3" stroke="#102a3a" strokeWidth="3" />
+                  <path d="M230 92c8-8 15-8 23 0s15 8 23 0" fill="none" stroke="#78d5d7" strokeWidth="4" strokeLinecap="round" />
+                  <path d="m38 48 4-9m187 1 6-7" stroke="#fff8e8" strokeWidth="4" strokeLinecap="round" />
+                </svg>
+              </div>
+            )}
+            <p className="mt-4 leading-6 text-slate-600">
+              {selectedRequest.description.length > 150 ? `${selectedRequest.description.slice(0, 147).trimEnd()}…` : selectedRequest.description}
             </p>
 
-            <p className="mt-6 text-sm text-slate-500">
-              {selectedRequest.location}
-            </p>
-
-            <p className="mt-8 text-xs font-bold uppercase text-slate-400">
-              Payout
+            <div className="my-5 h-px bg-[#BED8D4]" />
+            <p className="text-xs font-bold uppercase text-slate-400">
+              Reward
             </p>
             <p className="mt-1 text-4xl font-extrabold text-[#2081C3]">
-              {selectedRequest.price}
+              {selectedRequest.reward}
             </p>
+            <div className="mt-5 space-y-3 border-t border-[#BED8D4] pt-4 text-sm">
+              <p><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">Pickup</span><span className="mt-1 block font-semibold text-slate-700">{selectedRequest.pickup || selectedRequest.location || "Location not provided"}</span></p>
+              <p><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">Drop-off</span><span className="mt-1 block font-semibold text-slate-700">{selectedRequest.dropoff || "Not specified"}</span></p>
+              <QuestCountdown expiresAt={selectedRequest.expiresAt ?? (selectedRequest.createdAt ? new Date(new Date(selectedRequest.createdAt).getTime() + 24 * 60 * 60 * 1000).toISOString() : null)} />
+            </div>
           </div>
 
           <div className="border-t border-[#BED8D4] p-5">

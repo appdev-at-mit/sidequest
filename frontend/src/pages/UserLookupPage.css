@@ -1,0 +1,24 @@
+.leaderboard-viewport {
+  overflow: hidden;
+}
+
+.leaderboard-track {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  transform: translateX(0);
+}
+
+.leaderboard-track--sliding {
+  transition: transform 1500ms linear;
+  will-change: transform;
+}
+
+.leaderboard-card {
+  flex: 0 0 calc((100% - 16px) / 3);
+  min-width: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .leaderboard-track--sliding { transition-duration: 1ms; }
+}

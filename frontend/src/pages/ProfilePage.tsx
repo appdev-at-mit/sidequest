@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
-import PostRequestDialog from "../components/PostRequestDialog";
 import { useAuth } from "../AuthContext";
 
 type UserProfile = {
   kerb: string;
   name: string;
+  rank: number;
+  rating: number | null;
+  reviewCount: number;
+  quests: number;
+  earned: number;
   createdAt: string | null;
 };
 
@@ -19,20 +23,13 @@ type PostedRequest = {
 };
 
 
-export default function ProfilePage({ onSignedOut }: { onSignedOut: () => void }) {
-  const {isLoggedIn, setIsLoggedIn} = useAuth();
-  const [profileTab, setProfileTab] = useState<"Posted" | "Completed">("Completed");
-
-
+export default function ProfilePage({ refreshKey }: { refreshKey: number }) {
+  const {isLoggedIn} = useAuth();
   const [profile, setProfile] = useState<UserProfile | null>(null);
-
-  const [showRequest, setShowRequest] = useState(false);
-
 
   const [postedRequests, setPostedRequests] = useState<PostedRequest[]>([]);
   const [requestsLoading, setRequestsLoading] = useState(false);
   const [requestsError, setRequestsError] = useState("");
-  const [requestsVersion, setRequestsVersion] = useState(0);
 
   async function handleDeleteRequest(id: string) {
     if (!window.confirm("Delete this request?")) return;
@@ -90,7 +87,7 @@ export default function ProfilePage({ onSignedOut }: { onSignedOut: () => void }
     return () => {
       cancelled = true;
     };
-  }, [isLoggedIn, requestsVersion]);
+  }, [isLoggedIn, refreshKey]);
 
 useEffect(() => {
   if (!isLoggedIn) {
@@ -117,147 +114,45 @@ useEffect(() => {
 }, [isLoggedIn]);
 
 
-async function handleLogout() {
-  try {
-    const response = await fetch("/api/logout", {
-      method: "DELETE",
-    });
-
-    if (!response.ok) {
-      alert("Could not log out. Try again.");
-      return;
-    }
-
-    onSignedOut();
-    setIsLoggedIn(false);
-  } catch {
-    alert("Could not reach the server.");
-  }
-}
-
-
-
   return (
-        <main className="min-h-[calc(100vh-64px)] bg-[#F7F9F9] px-5 py-10 sm:px-8">
-          <div className="mx-auto max-w-4xl">
-            <section className="flex flex-col gap-5 border-b border-[#BED8D4] pb-8 sm:flex-row sm:items-center">
-              <Avatar initials="JD" large />
-              <div>
-                <h1 className="text-2xl font-extrabold tracking-[-0.5px]"> {profile?.name ?? "Loading..."}</h1>
+        <main className="min-h-[calc(100vh-64px)] bg-[#F7F9F9] px-5 py-8 sm:px-8">
+          <div className="mx-auto max-w-5xl">
+            <section className="pb-8 text-center">
+              <div className="relative h-36 overflow-visible rounded-t-2xl bg-[#78D5D7]">
+                <span aria-hidden="true" className="absolute left-[12%] top-8 h-16 w-16 rounded-full border-[10px] border-white/25" />
+                <span aria-hidden="true" className="absolute right-[15%] top-6 h-20 w-20 rotate-12 rounded-3xl border-4 border-[#2081C3]/30" />
+                <div className="absolute bottom-[-42px] left-1/2 z-10 -translate-x-1/2 rounded-full border-4 border-[#F7F9F9] bg-[#F7F9F9]"><Avatar initials={(profile?.name ?? "U").slice(0, 1).toUpperCase()} large /></div>
+              </div>
+              <div className="mt-12">
+                <h1 className="text-2xl font-extrabold tracking-[-0.5px]">{profile?.name ?? "Loading..."}</h1>
                 <p className="mt-1 text-sm text-slate-500">{profile?.kerb ?? "Loading..."}@mit.edu</p>
-                <p className="mt-2 flex items-center gap-1.5 text-sm font-semibold">
-                  <span className="text-[#2081C3]">
-                    <Icon name="star" size={15} />
-                  </span>
-                  4.9 <span className="font-normal text-slate-400">(42 reviews)</span>
+                <p className="mt-2 flex items-center justify-center gap-1.5 text-sm font-semibold"><span className="text-[#2081C3]"><Icon name="star" size={15} /></span>{profile?.rating == null ? "No ratings yet" : `${profile.rating.toFixed(1)} · ${profile.reviewCount} ${profile.reviewCount === 1 ? "review" : "reviews"}`}
                 </p>
+                {profile?.rank ? <p className="mt-2 text-sm font-semibold">Leaderboard rank #{profile.rank}</p> : null}
               </div>
-              <button className="rounded-md border border-[#BED8D4] px-4 py-2.5 text-sm font-bold text-slate-600 hover:border-[#78D5D7] sm:ml-auto">
-                Edit Profile
-              </button>
-              <button
-                onClick={handleLogout}
-                className="rounded bg-blue-600 px-4 py-2 text-white"
-              >
-                Log out
-            </button>
-
             </section>
 
-
-
-            <section className="grid grid-cols-3 border-b border-[#BED8D4] py-8">
-              {[
-                ["18", "Quests Completed"],
-                ["$1,240", "Total Earned"],
-                ["Sep 2024", "Member Since"],
-              ].map(([value, label], index) => (
-                <div
-                  key={label}
-                  className={`px-3 text-center ${index > 0 ? "border-l border-[#BED8D4]" : ""}`}
-                >
-                  <p className="text-xl font-extrabold sm:text-2xl">{value}</p>
-                  <p className="mt-1 text-xs text-slate-500 sm:text-sm">{label}</p>
-                </div>
-              ))}
+            <section className="grid grid-cols-2 border-y border-[#BED8D4] py-6">
+              <div className="border-r border-[#BED8D4] px-3 text-center"><p className="text-xl font-extrabold sm:text-2xl">{profile?.quests ?? 0}</p><p className="mt-1 text-xs text-slate-500 sm:text-sm">Quests Completed</p></div>
+              <div className="px-3 text-center"><p className="text-xl font-extrabold sm:text-2xl">{(profile?.earned ?? 0).toFixed(2)}</p><p className="mt-1 text-xs text-slate-500 sm:text-sm">Total rewards earned</p></div>
             </section>
+            <p className="py-3 text-center text-xs text-slate-500">{profile?.createdAt && `Member since ${new Date(profile.createdAt).toLocaleDateString(undefined, { month: "short", year: "numeric" })}`}</p>
 
-            <section className="pt-8">
-              <div className="flex gap-7 border-b border-[#BED8D4]">
-                {(["Posted", "Completed"] as const).map((tab) => (
-                  <button
-                    key={tab}
-                    onClick={() => setProfileTab(tab)}
-                    className={`relative pb-3 text-sm font-bold ${
-                      profileTab === tab
-                        ? "text-[#2081C3] after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-[#2081C3]"
-                        : "text-slate-500"
-                    }`}
-                  >
-                    {tab}
-                  </button>
-                ))}
-              </div>
+            <section className="mt-5 grid gap-6 lg:grid-cols-2">
+              <div className="min-w-0 border-t-2 border-[#2081C3] pt-4">
+                <h2 className="text-lg font-extrabold">Posted requests</h2>
                 <div className="divide-y divide-[#BED8D4]">
-                {profileTab === "Completed" ? (
-                  <p className="py-5 text-sm text-slate-500">
-                    Completed requests aren’t connected yet.
-                  </p>
-                ) : requestsLoading ? (
-                  <p className="py-5">Loading requests...</p>
-                ) : requestsError ? (
-                  <p role="alert" className="py-5">{requestsError}</p>
-                ) : postedRequests.length === 0 ? (
-                  <p className="py-5 text-sm text-slate-500">
-                    You haven’t posted any requests yet.
-                  </p>
-                ) : (
-                  postedRequests.map((request) => (
-                    <article
-                      key={request._id}
-                      className="flex items-center gap-4 py-5"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <h2 className="font-bold">{request.description}</h2>
-                        <p className="mt-1 text-xs text-slate-500">
-                          {request.end
-                            ? `Deadline: ${new Date(request.end).toLocaleString()}`
-                            : "No deadline"}
-                        </p>
-                      </div>
-
-                      {/* <span className="rounded-full border border-[#BED8D4] px-3 py-1.5 text-xs font-bold text-slate-500">
-                        Posted
-                      </span> */}
-
-                      <button
-                        onClick={() => handleDeleteRequest(request._id)}
-                        className="text-sm font-bold text-red-600"
-                      >
-                        Delete
-                      </button>
-
-                      <span className="text-right font-extrabold text-[#2081C3]">
-                        {new Intl.NumberFormat("en-US", {
-                          style: "currency",
-                          currency: "USD",
-                        }).format(request.pay)}
-                      </span>
-                    </article>
-                  ))
-                )}
+                  {requestsLoading ? <p className="py-5 text-sm text-slate-500">Loading requests...</p> : requestsError ? <p role="alert" className="py-5 text-sm">{requestsError}</p> : postedRequests.length === 0 ? <p className="py-5 text-sm text-slate-500">You haven’t posted any requests yet.</p> : postedRequests.map(request => <article key={request._id} className="flex items-center gap-4 py-5">
+                    <div className="min-w-0 flex-1"><h3 className="font-bold">{request.description}</h3><p className="mt-1 text-xs text-slate-500">{request.end ? `Deadline: ${new Date(request.end).toLocaleString()}` : "No deadline"}</p></div>
+                    <button onClick={() => handleDeleteRequest(request._id)} className="text-sm font-bold text-red-600">Delete</button>
+                    <span className="font-extrabold text-[#2081C3]">{request.pay.toFixed(2)}</span>
+                  </article>)}
+                </div>
               </div>
-              <button onClick={() => setShowRequest(true)}
-                className="mt-4 rounded-lg bg-[#08679e] px-4 py-2 text-sm font-bold text-white">
-                Post a request
-              </button>
-              {showRequest && (
-                <PostRequestDialog onClose={() => setShowRequest(false)} onPosted={() => {
-                  setShowRequest(false);
-                  setProfileTab("Posted");
-                  setRequestsVersion((version) => version + 1);
-                }} />
-              )}
+              <div className="border-t-2 border-[#BED8D4] pt-4">
+                <h2 className="text-lg font-extrabold">Completed quests</h2>
+                <p className="py-5 text-sm text-slate-500">Completed quests will appear here.</p>
+              </div>
             </section>
           </div>
         </main>

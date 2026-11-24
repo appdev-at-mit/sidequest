@@ -1,6 +1,12 @@
 services:
   mongodb:
     image: mongo:8.0
+    command: ["mongod", "--replSet", "sidequest", "--bind_ip_all"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "if (!db.hello().isWritablePrimary) { try { rs.status() } catch (error) { if (error.code === 94) rs.initiate({_id:'sidequest',members:[{_id:0,host:'localhost:27017'}]}) }; quit(1) }"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     ports:
       - "127.0.0.1:27017:27017"
     volumes:

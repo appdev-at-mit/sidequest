@@ -14,10 +14,10 @@ export default function CompleteQuest({selectedRequest, onBack}: Props) {
             </p>
             <div className="mt-8 rounded-lg border border-[#BED8D4] bg-white p-7 shadow-[0_1px_3px_rgba(0,0,0,0.08)]">
               <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-slate-400">
-                You earned
+                Reward earned
               </p>
               <p className="mt-2 text-5xl font-extrabold tracking-[-1.5px] text-[#2081C3]">
-                {selectedRequest.price}
+                {selectedRequest.reward}
               </p>
               <p className="mt-3 text-sm text-slate-500">Added to your SideQuest balance.</p>
             </div>
