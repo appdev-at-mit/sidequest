@@ -20,6 +20,8 @@ export type Request = {
   expiresAt?: string | null;
   expired?: boolean;
   rating?: number | null;
+  requesterRating?: number | null;
+  requesterReviewCount?: number;
   imageUrl?: string | null;
   status?: "open" | "in_progress" | "pending_review" | "awaiting_payment" | "payment_sent" | "completed" | "disputed" | "cancelled";
   questStage?: number;

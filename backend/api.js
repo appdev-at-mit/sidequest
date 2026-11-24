@@ -307,11 +307,17 @@ function summarizeQuestTitle(description) {
         }
         const requests = await db.getAllRequests(req.user.kerb);
         const kerbs = [...new Set(requests.map(request => request.requester).filter(Boolean))];
-        const owners = await db.users.find({ kerb: { $in: kerbs } }, { projection: { kerb: 1, name: 1 } }).toArray();
-        const names = new Map(owners.map(owner => [owner.kerb, owner.name]));
+        const owners = await Promise.all(kerbs.map(async kerb => {
+            const profile = await db.getUserMetrics(kerb);
+            return profile ? [kerb, profile] : null;
+        }));
+        const profiles = new Map(owners.filter(Boolean));
         res.status(200).json({
             result: "success",
-            data: requests.map(request => ({ ...request, requesterName: names.get(request.requester) ?? request.requester }))
+            data: requests.map(request => {
+                const profile = profiles.get(request.requester);
+                return { ...request, requesterName: profile?.name ?? request.requester, requesterRating: profile?.rating ?? null, requesterReviewCount: profile?.reviewCount ?? 0 };
+            })
         })
     })
 

@@ -47,6 +47,8 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
   const [routeDetails, setRouteDetails] = useState<{ minutes: number; miles: number } | null>(null);
 
   const [directionsCollapsed, setDirectionsCollapsed] = useState(false);
+  const [mapExpanded, setMapExpanded] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
   const [manageMenuOpen, setManageMenuOpen] = useState(false);
 
 
@@ -464,7 +466,7 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
         <main className="isolate min-h-[calc(100vh-64px)] bg-[#F7F9F9]">
 
 
-          <section className="relative h-[48vh] min-h-[340px] border-b border-[#BED8D4]">
+          <section className={`relative ${mapExpanded ? "h-[72vh] min-h-[520px]" : "h-[48vh] min-h-[340px]"} border-b border-[#BED8D4] transition-[height] duration-300`}>
 
 
             <div
@@ -482,6 +484,7 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
             />
 
 
+            <button type="button" onClick={() => setMapExpanded(value => !value)} aria-label={mapExpanded ? "Shrink map" : "Expand map"} className="absolute right-4 top-4 z-[500] rounded-md border border-[#BED8D4] bg-white px-3 py-2 text-xs font-bold text-[#08679e] shadow-sm">{mapExpanded ? "Smaller map" : "Larger map"}</button>
             {directionsCollapsed ? <button type="button" onClick={() => setDirectionsCollapsed(false)} className="absolute bottom-4 right-4 z-[500] rounded-lg border border-[#BED8D4] bg-white px-4 py-2.5 text-sm font-bold text-[#08679e] shadow-[0_1px_3px_rgba(0,0,0,0.08)]">Directions</button> : <div className="absolute bottom-4 right-4 z-[500] w-[min(320px,calc(100%-32px))] rounded-lg border border-[#BED8D4] bg-white p-1.5 shadow-[0_1px_3px_rgba(0,0,0,0.08)]">
 
 
@@ -588,7 +591,7 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
               >
 
 
-                âˆ’
+                −
 
 
               </button>
@@ -676,7 +679,7 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
 
               </dl>
 
-              <section className="mt-5 grid gap-3 rounded-xl border border-[#BED8D4] bg-white p-4">
+              <section className="mt-5 grid gap-3">
                 <div><h2 className="text-sm font-bold uppercase text-slate-500">Quest details</h2><p className="mt-2 whitespace-pre-wrap text-sm leading-6">{selectedRequest.description}</p></div>
                 <p className="text-sm"><span className="font-semibold">Category:</span> {selectedRequest.category}</p>
                 {selectedRequest.imageUrl && <figure><img src={selectedRequest.imageUrl} alt={`Photo attached to ${selectedRequest.title}`} className="max-h-72 rounded-lg object-contain" /><figcaption className="mt-1 text-xs text-slate-500">Quest attachment</figcaption></figure>}
@@ -688,16 +691,6 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
               </section>}
 
               {(isRequester || isHelper) && <section className="mt-5 grid gap-4 border-t border-[#BED8D4] pt-5">
-                <h2 className="text-lg font-extrabold">Quest progress</h2>
-                <p className="text-sm font-semibold text-slate-700">Status: {questStatus.replaceAll("_", " ")}</p>
-                <ol aria-label="Quest progress timeline" className="grid gap-3 border-l-2 border-[#BED8D4] pl-4 text-sm">{[
-                  { label: "Quest posted", at: selectedRequest.createdAt },
-                  { label: "Quest accepted", at: selectedRequest.acceptedAt },
-                  { label: "Completion submitted", at: selectedRequest.completionSubmission?.submittedAt },
-                  { label: "Completion approved", at: selectedRequest.requesterApprovedAt },
-                  { label: "Reward sent", at: selectedRequest.paymentSentAt },
-                  { label: "Payment confirmed", at: selectedRequest.paymentConfirmedAt },
-                ].map(item => <li key={item.label} className="relative"><span className={`absolute -left-[1.35rem] top-1 h-3 w-3 rounded-full border-2 ${item.at ? "border-[#2081C3] bg-[#2081C3]" : "border-slate-300 bg-white"}`} /> <span className={item.at ? "font-semibold" : "text-slate-400"}>{item.label}</span>{item.at && <time className="ml-2 text-xs text-slate-500">{new Date(item.at).toLocaleString()}</time>}</li>)}</ol>
                 {questStatus === "pending_review" && <p className="rounded-lg bg-[#EAF3F2] p-3 text-sm">{isRequester ? "Review the submitted completion." : "Waiting for the requester to review your submission."}</p>}
                 {questStatus === "awaiting_payment" && <p className="rounded-lg bg-[#EAF3F2] p-3 text-sm">{isRequester ? `Send the agreed ${selectedRequest.reward} reward.` : `Waiting for your ${selectedRequest.reward} reward.`}</p>}
                 {questStatus === "payment_sent" && <p className="rounded-lg bg-[#EAF3F2] p-3 text-sm">{isRequester ? "Waiting for the completer to confirm receipt." : "Confirm that you received your reward."}</p>}
@@ -730,9 +723,11 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
                   <textarea name="text" maxLength={1000} placeholder="Optional written review" className="min-h-16 rounded-md border border-[#BED8D4] p-3 text-sm" />
                   <button disabled={workflowBusy} className="w-fit rounded-md bg-[#2081C3] px-4 py-2 text-sm font-bold text-white disabled:opacity-60">{workflowBusy ? "Saving…" : "Submit review"}</button>
                 </form>}
-                {questStatus !== "disputed" && questStatus !== "cancelled" && questStatus !== "completed" && <form onSubmit={event => { event.preventDefault(); const values = new FormData(event.currentTarget); void workflowAction(`/api/requests/${selectedRequest.id}/disputes`, { reason: values.get("reason"), description: values.get("description"), evidence: values.get("evidence") }); }} className="grid gap-3 rounded-lg border border-amber-200 bg-amber-50/50 p-4">
-                  <h3 className="font-bold">Report a problem with this quest</h3><select name="reason" required defaultValue="" className="rounded-md border border-[#BED8D4] bg-white p-2 text-sm"><option value="" disabled>Choose a reason</option>{["Requester failed to pay", "Completer failed to complete the quest", "Quest requirements were misrepresented", "Payment amount was incorrect", "Harassment or inappropriate behavior", "Other"].map(reason => <option key={reason}>{reason}</option>)}</select><textarea name="description" required maxLength={2000} placeholder="Describe the issue" className="min-h-16 rounded-md border border-[#BED8D4] bg-white p-3 text-sm" /><textarea name="evidence" maxLength={4000} placeholder="Evidence notes (text only)" className="min-h-14 rounded-md border border-[#BED8D4] bg-white p-3 text-sm" /><button disabled={workflowBusy} className="w-fit rounded-md border border-amber-300 px-4 py-2 text-sm font-bold">{workflowBusy ? "Submitting…" : "Open a dispute"}</button>
-                </form>}
+                {questStatus !== "disputed" && questStatus !== "cancelled" && questStatus !== "completed" && <div className="grid gap-3">
+                  {!reportOpen ? <button type="button" onClick={() => setReportOpen(true)} className="w-fit rounded-lg bg-red-600 px-4 py-2 text-sm font-bold text-white hover:bg-red-700">Report problem</button> : <form onSubmit={event => { event.preventDefault(); const values = new FormData(event.currentTarget); void workflowAction(`/api/requests/${selectedRequest.id}/disputes`, { reason: values.get("reason"), description: values.get("description"), evidence: values.get("evidence") }); }} className="grid gap-3 rounded-lg border border-red-200 bg-red-50/50 p-4">
+                    <h3 className="font-bold">Report a problem with this quest</h3><select name="reason" required defaultValue="" className="rounded-md border border-[#BED8D4] bg-white p-2 text-sm"><option value="" disabled>Choose a reason</option>{["Requester failed to pay", "Completer failed to complete the quest", "Quest requirements were misrepresented", "Payment amount was incorrect", "Harassment or inappropriate behavior", "Other"].map(reason => <option key={reason}>{reason}</option>)}</select><textarea name="description" required maxLength={2000} placeholder="Describe the issue" className="min-h-16 rounded-md border border-[#BED8D4] bg-white p-3 text-sm" /><textarea name="evidence" maxLength={4000} placeholder="Evidence notes (text only)" className="min-h-14 rounded-md border border-[#BED8D4] bg-white p-3 text-sm" /><button disabled={workflowBusy} className="w-fit rounded-md border border-red-300 px-4 py-2 text-sm font-bold">{workflowBusy ? "Submitting…" : "Open a dispute"}</button>
+                  </form>}
+                </div>}
               </section>}
 
 

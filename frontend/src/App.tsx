@@ -70,8 +70,10 @@ export default function App() {
   const [userSuggestionsLoading, setUserSuggestionsLoading] = useState(false);
   const [stage, setStage] = useState<1 | 2 | 3>(1);
   const [chatOpen, setChatOpen] = useState(false);
+  const [chatRequestId, setChatRequestId] = useState("");
   const [chatUnread, setChatUnread] = useState(false);
   const [notificationOpen, setNotificationOpen] = useState(false);
+  const [showAllNotifications, setShowAllNotifications] = useState(false);
   const [notifications, setNotifications] = useState<{ _id: string; type?: string; title: string; message: string; createdAt: string; readAt?: string | null; requestId?: string }[]>([]);
   const menuRef = useRef<HTMLElement>(null);
   const userSearchRef = useRef<HTMLFormElement>(null);
@@ -185,6 +187,8 @@ export default function App() {
         rewardCents?: number;
         requester: string | null;
         requesterName?: string | null;
+        requesterRating?: number | null;
+        requesterReviewCount?: number;
         lat?: number;
         lng?: number;
         start?: string;
@@ -219,6 +223,8 @@ export default function App() {
           reward: ((request.rewardCents ?? Math.round(Number(request.pay) * 100)) / 100).toFixed(2),
           rewardCents: request.rewardCents ?? Math.round(Number(request.pay) * 100),
           poster: request.requesterName ?? request.requester ?? "Unknown user",
+          requesterRating: request.requesterRating ?? null,
+          requesterReviewCount: request.requesterReviewCount ?? 0,
           category: request.category ?? "Uncategorized",
           location: request.pickup || (request.lat != null && request.lng != null
             ? "Location shown on the map" : "Location not provided"),
@@ -392,6 +398,7 @@ export default function App() {
           </button>
           <button type="button" aria-label={chatOpen ? "Close chat" : "Open chat"} title="Messages" onClick={() => {
             setChatOpen(open => !open);
+            setChatRequestId("");
             setChatUnread(false);
             const unreadMessages = notifications.filter(item => item.type === "message" && !item.readAt);
             unreadMessages.forEach(item => { void fetch(`/api/notifications/${item._id}/read`, { method: "PATCH" }); });
@@ -408,16 +415,17 @@ export default function App() {
           )}
         </div>
       </header>
-      {notificationOpen && <section aria-label="Notifications" className="fixed right-4 top-[72px] z-[90] max-h-[min(70vh,520px)] w-[min(380px,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-[#BED8D4] bg-white p-4 shadow-xl">
-        <div className="mb-3 flex items-center justify-between"><h2 className="font-extrabold">Notifications</h2><button type="button" onClick={() => setNotificationOpen(false)} aria-label="Close notifications" className="rounded-md p-1 hover:bg-[#E5F1F3]"><Icon name="x" size={18} /></button></div>
-        {!notifications.length ? <p className="py-5 text-center text-sm text-slate-500">No updates yet.</p> : <div className="divide-y divide-[#BED8D4]">{notifications.map(item => <button key={item._id} type="button" onClick={() => {
+      {notificationOpen && <section aria-label="Notifications" className="fixed right-4 top-[72px] z-[90] max-h-[min(78vh,620px)] w-[min(420px,calc(100vw-2rem))] overflow-y-auto rounded-2xl border border-[#BED8D4] bg-white p-5 shadow-xl">
+        <div className="mb-3 flex items-center justify-between border-b border-[#D8DEDE] pb-4"><h2 className="text-xl font-bold">Notifications</h2><button type="button" onClick={() => { setNotifications(current => current.map(item => ({ ...item, readAt: item.readAt ?? new Date().toISOString() }))); notifications.filter(item => !item.readAt).forEach(item => { void fetch(`/api/notifications/${item._id}/read`, { method: "PATCH" }); }); }} disabled={!notifications.some(item => !item.readAt)} className="text-sm font-semibold text-[#496A9A] disabled:opacity-50">Mark all as read</button></div>
+        {!notifications.length ? <p className="py-5 text-center text-sm text-slate-500">No updates yet.</p> : <div className="divide-y divide-[#D8DEDE]">{(showAllNotifications ? notifications : notifications.slice(0, 3)).map(item => <button key={item._id} type="button" onClick={() => {
           if (!item.readAt) {
             setNotifications(current => current.map(entry => entry._id === item._id ? { ...entry, readAt: new Date().toISOString() } : entry));
             void fetch(`/api/notifications/${item._id}/read`, { method: "PATCH" });
           }
           setNotificationOpen(false);
           if (item.requestId) navigateQuest(item.requestId);
-        }} className={`block w-full px-1 py-3 text-left ${item.readAt ? "opacity-70" : ""}`}><span className="flex items-start gap-2"><span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${item.readAt ? "bg-transparent" : "bg-[#2081C3]"}`} /><span><strong className="block text-sm">{item.title}</strong><span className="mt-0.5 block text-sm text-slate-600">{item.message}</span><time className="mt-1 block text-xs text-slate-400">{new Date(item.createdAt).toLocaleString()}</time></span></span></button>)}</div>}
+        }} className={`block w-full px-1 py-5 text-left ${item.readAt ? "opacity-70" : ""}`}><span className="flex items-start gap-4"><span className="mt-1 text-[#496A9A]"><Icon name={item.type === "payment" ? "wallet" : item.type === "message" ? "chat" : "check"} size={23} /></span><span className="min-w-0 flex-1"><strong className="block text-base">{item.title}</strong><span className="mt-1 block text-sm text-slate-600">{item.message}</span><time className="mt-1 block text-sm text-slate-500">{new Date(item.createdAt).toLocaleString()}</time></span><span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${item.readAt ? "bg-transparent" : "bg-[#496A9A]"}`} /></span></button>)}</div>}
+        {notifications.length > 3 && <button type="button" onClick={() => setShowAllNotifications(value => !value)} className="w-full pt-4 text-center font-bold text-[#496A9A]">{showAllNotifications ? "Show fewer notifications" : "View all notifications"}</button>}
       </section>}
       {dropoffOpen && <DropoffPicker onClose={() => { setDropoffOpen(false); setDropoffAddress(localStorage.getItem("sidequest-default-dropoff") || "Current location"); setDropoffCoordinates(selectedDropoffCoordinates()); }} onSelectAddress={address => { setDropoffAddress(address); setDropoffCoordinates(selectedDropoffCoordinates()); }} />}
       {feedbackOpen && <FeedbackDialog onClose={() => setFeedbackOpen(false)} />}
@@ -545,7 +553,7 @@ export default function App() {
     onEdit={() => { setQuestToEditId(String(selectedRequest.id)); navigate("my-quests"); }}
     onDelete={() => { void deleteSelectedQuest(); }}
     onViewUser={kerb => { setUserSearchQuery(kerb); setUserProfileKerb(kerb); navigate("users"); }}
-    onMessage={() => setChatOpen(true)}
+    onMessage={() => { setChatRequestId(String(selectedRequest.id)); setChatOpen(true); }}
     onComplete={() => { setRequestsVersion(version => version + 1); }}
     onCancelled={() => { setRequestsVersion(version => version + 1); navigate("map"); }}
   />
@@ -555,7 +563,7 @@ export default function App() {
 {page === "profile" && <ProfilePage refreshKey={requestsVersion} onPostQuest={() => setPostingRequest(true)} onRequestDeleted={() => setRequestsVersion(version => version + 1)} />}
       {page === "admin" && isAdmin && <AdminPage />}
 {page === "users" && <UserLookupPage initialQuery={userSearchQuery} searchVersion={userSearchVersion} initialProfileKerb={userProfileKerb} />}
-      <ChatPopup request={selectedRequest} open={chatOpen} onClose={() => setChatOpen(false)} onUnreadChange={setChatUnread} />
+      <ChatPopup request={requests.find(request => String(request.id) === chatRequestId) ?? (String(routeRequest?.id) === chatRequestId ? routeRequest ?? undefined : undefined)} currentKerb={userKerb} open={chatOpen} onClose={() => setChatOpen(false)} onUnreadChange={setChatUnread} />
 
     </div>
   );

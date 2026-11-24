@@ -6,16 +6,49 @@ import type { Request } from "../data/requests";
 import "./ChatPopup.css";
 
 type Message = { sender: string; text: string; createdAt: string; own?: boolean };
-type Props = { request?: Request; open: boolean; onClose: () => void; onUnreadChange: (unread: boolean) => void };
+type InboxItem = { request: Request; counterpart: string; preview: string; updatedAt: string | null };
+type Props = { request?: Request; currentKerb: string; open: boolean; onClose: () => void; onUnreadChange: (unread: boolean) => void };
 
-export default function ChatPopup({ request, open, onClose, onUnreadChange }: Props) {
+export default function ChatPopup({ request: routedRequest, currentKerb, open, onClose, onUnreadChange }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
+  const [inbox, setInbox] = useState<InboxItem[]>([]);
+  const [inboxSearch, setInboxSearch] = useState("");
+  const [activeQuestId, setActiveQuestId] = useState("");
+  const [inboxLoading, setInboxLoading] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [unread, setUnread] = useState(false);
+  const request = routedRequest ?? inbox.find(item => String(item.request.id) === activeQuestId)?.request;
   const key = request ? `sidequest-chat-read-${request.id}` : "";
 
   useEffect(() => { onUnreadChange(unread); }, [unread, onUnreadChange]);
+
+  useEffect(() => { if (open && !routedRequest) setActiveQuestId(""); }, [open, routedRequest?.id]);
+
+  useEffect(() => {
+    if (!open || routedRequest) return;
+    const controller = new AbortController();
+    setInboxLoading(true);
+    fetch("/api/my-quests", { signal: controller.signal })
+      .then(async response => { const result = await response.json().catch(() => null); if (!response.ok) throw new Error(result?.msg ?? "Could not load your messages."); return result?.data ?? []; })
+      .then(async quests => Promise.all(quests.filter((quest: any) => quest.helper && [quest.requester, quest.helper].includes(currentKerb) && quest.status !== "open").map(async (quest: any) => {
+        const otherKerb = quest.requester === currentKerb ? quest.helper : quest.requester;
+        const [profileResponse, messageResponse] = await Promise.all([
+          fetch(`/api/user-profiles/${encodeURIComponent(otherKerb)}`, { signal: controller.signal }).catch(() => null),
+          fetch(`/api/requests/${quest._id}/messages`, { signal: controller.signal }).catch(() => null),
+        ]);
+        const profileData = profileResponse?.ok ? await profileResponse.json().catch(() => null) : null;
+        const messageData = messageResponse?.ok ? await messageResponse.json().catch(() => null) : null;
+        const thread: Message[] = messageData?.data ?? [];
+        const request: Request = { id: quest._id, title: quest.title ?? quest.description, description: quest.description, category: quest.category ?? "Quest", reward: Number(quest.pay ?? 0).toFixed(2), location: quest.pickup ?? "", distance: "", posted: "", lat: quest.lat ?? null, lng: quest.lng ?? null, poster: profileData?.name ?? otherKerb, requester: quest.requester, helper: quest.helper, status: quest.status };
+        const last = thread.at(-1);
+        return { request, counterpart: profileData?.name ?? otherKerb, preview: last?.text ?? "Start a conversation", updatedAt: last?.createdAt ?? quest.acceptedAt ?? quest.createdAt ?? null };
+      })))
+      .then(items => { if (!controller.signal.aborted) setInbox(items.sort((a, b) => Date.parse(b.updatedAt ?? "") - Date.parse(a.updatedAt ?? ""))); })
+      .catch(reason => { if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : "Could not load your messages."); })
+      .finally(() => { if (!controller.signal.aborted) setInboxLoading(false); });
+    return () => controller.abort();
+  }, [open, routedRequest?.id, currentKerb]);
 
   useEffect(() => {
     if (!request || !open) return;
@@ -59,17 +92,22 @@ export default function ChatPopup({ request, open, onClose, onUnreadChange }: Pr
   }
 
   return <section role="dialog" aria-label={request ? `Chat about ${request.title}` : "Messages"} aria-hidden={!open} className={`chat-popover ${open ? "chat-popover-open" : "chat-popover-closed"}`}>
-    <header className="flex items-center gap-3 border-b border-[#BED8D4] bg-[#F7F9F9] px-4 py-3">
+    <header className="flex items-center gap-3 border-b border-[#BED8D4] bg-white px-4 py-3">
+      {request && !routedRequest && <button type="button" aria-label="Back to messages" onClick={() => { setActiveQuestId(""); setError(""); }} className="rounded-md p-1 hover:bg-[#BED8D4]/30"><Icon name="arrow" size={18} /></button>}
       {request && <Avatar initials={request.poster.slice(0, 1).toUpperCase()} />}
-      <div className="min-w-0 flex-1"><h2 className="truncate font-bold">{request?.poster ?? "Messages"}</h2>{request && <p className="truncate text-xs text-slate-500">{request.title}</p>}</div>
+      <div className="min-w-0 flex-1"><h2 className="truncate text-lg font-bold">{request?.poster ?? "Messages"}</h2>{request && <p className="truncate text-sm text-slate-500">{request.title}</p>}</div>
       <button type="button" aria-label="Close chat" onClick={onClose} className="rounded-md p-2 hover:bg-[#BED8D4]/40"><Icon name="x" size={18} /></button>
     </header>
+    {!request ? <div className="min-h-0 flex-1 overflow-y-auto bg-white p-4">
+      <label className="mb-3 flex items-center gap-2 rounded-full border border-[#BED8D4] px-4 py-3 text-slate-500"><Icon name="search" size={18} /><span className="sr-only">Search messages</span><input value={inboxSearch} onChange={event => setInboxSearch(event.target.value)} placeholder="Search messages" className="min-w-0 flex-1 bg-transparent text-sm outline-none" /></label>
+      {inboxLoading ? <p role="status" className="py-6 text-center text-sm text-slate-500">Loading messages…</p> : inbox.filter(item => `${item.counterpart} ${item.request.title} ${item.preview}`.toLowerCase().includes(inboxSearch.toLowerCase())).length ? <div className="divide-y divide-[#D8DEDE]">{inbox.filter(item => `${item.counterpart} ${item.request.title} ${item.preview}`.toLowerCase().includes(inboxSearch.toLowerCase())).map(item => <button type="button" key={item.request.id} onClick={() => { setActiveQuestId(String(item.request.id)); setError(""); }} className="flex w-full items-center gap-3 py-4 text-left hover:bg-[#F7F9F9]"><Avatar initials={item.counterpart.slice(0, 1).toUpperCase()} /><span className="min-w-0 flex-1"><strong className="block truncate">{item.counterpart}</strong><span className="block truncate text-sm text-[#496A9A]">{item.request.title}</span><span className="block truncate text-sm text-slate-500">{item.preview}</span></span><time className="shrink-0 text-xs text-slate-500">{item.updatedAt ? new Date(item.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : ""}</time></button>)}</div> : !error && <p className="py-8 text-center text-sm text-slate-500">No conversations yet.</p>}
+      {error && <p role="status" className="py-3 text-center text-xs text-slate-600">{error}</p>}
+    </div> : <>
     <div className="flex-1 space-y-3 overflow-y-auto bg-[#F7F9F9] p-4" aria-live="polite">
-      {!request && <p className="mt-8 text-center text-sm text-slate-500">Post or accept a quest to start a conversation.</p>}
-      {request && !messages.length && !error && <p className="mt-8 text-center text-sm text-slate-500">Start a conversation about this quest.</p>}
+      {!messages.length && !error && <p className="mt-8 text-center text-sm text-slate-500">Start a conversation about this quest.</p>}
       {messages.map((message, index) => <div key={`${message.createdAt}-${index}`} className={`flex ${message.own ? "justify-end" : "justify-start"}`}><div className={`max-w-[85%] rounded-2xl px-3 py-2 ${message.own ? "rounded-br-sm bg-[#2081C3] text-white" : "rounded-bl-sm bg-[#DCEBED] text-[#102A3A]"}`}><p className="whitespace-pre-wrap break-words text-sm">{message.text}</p><time className={`mt-1 block text-right text-[10px] ${message.own ? "text-white/75" : "text-slate-500"}`}>{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></div></div>)}
       {error && <p role="status" className="rounded-md bg-white p-3 text-center text-xs text-slate-600">{error}</p>}
     </div>
-    <form onSubmit={send} className="flex items-center gap-2 border-t border-[#BED8D4] p-3"><input value={draft} onChange={event => setDraft(event.target.value)} maxLength={2000} placeholder="Write a message…" className="min-w-0 flex-1 rounded-full border border-[#BED8D4] px-4 py-2.5 text-sm outline-[#2081C3]" /><button type="submit" disabled={!request || !draft.trim()} aria-label="Send message" className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#2081C3] text-white disabled:opacity-40"><Icon name="send" size={18} /></button></form>
+    <form onSubmit={send} className="flex items-center gap-2 border-t border-[#BED8D4] p-3"><input value={draft} onChange={event => setDraft(event.target.value)} maxLength={2000} placeholder="Write a message…" className="min-w-0 flex-1 rounded-full border border-[#BED8D4] px-4 py-2.5 text-sm outline-[#2081C3]" /><button type="submit" disabled={!request || !draft.trim()} aria-label="Send message" className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-[#2081C3] text-white disabled:opacity-40"><Icon name="send" size={18} /></button></form></>}
   </section>;
 }
