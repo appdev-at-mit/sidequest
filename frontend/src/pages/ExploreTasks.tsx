@@ -195,12 +195,9 @@ export default function ExploreTasks({
       </div>
 
       {requestOpen && clusterRequests && (
-        <aside role="dialog" aria-label="Requests in this area" className="absolute inset-y-0 right-0 z-40 flex w-full max-w-[400px] flex-col border-l border-[#BED8D4] bg-[#F7F9F9] shadow-lg">
-          <div className="flex items-start justify-between gap-3 border-b border-[#BED8D4] p-5">
-            <div><p className="text-xs font-bold uppercase tracking-wide text-[#2081C3]">Map cluster</p><h2 className="mt-1 text-xl font-extrabold">{clusterRequests.length} requests nearby</h2></div>
-            <button onClick={() => { setRequestOpen(false); setClusterRequests(null); }} aria-label="Close clustered requests" className="rounded-md p-2 hover:bg-[#BED8D4]/40"><Icon name="x" size={18} /></button>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <aside role="dialog" aria-label="Requests in this area" className="absolute inset-y-0 right-0 z-40 flex w-full max-w-[400px] flex-col bg-transparent">
+          <button onClick={() => { setRequestOpen(false); setClusterRequests(null); }} aria-label="Close clustered requests" className="absolute right-3 top-3 z-10 rounded-md bg-white/90 p-2 text-slate-600 shadow-sm hover:bg-white"><Icon name="x" size={18} /></button>
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-14">
             <div className="flex flex-col gap-3">
               {clusterRequests.map(request => <button key={request.id} onClick={() => { setSelectedRequestId(request.id); setClusterRequests(null); if (typeof request.lat === "number" && typeof request.lng === "number") leafletMap.current?.setView([request.lat, request.lng], Math.max(leafletMap.current.getZoom(), 17), { animate: true }); }} className="w-full rounded-xl border border-[#BED8D4] bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-[#2081C3] hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#2081C3]">
                 <div className="flex items-start justify-between gap-3"><h3 className="font-extrabold">{request.title}</h3><span className="shrink-0 font-extrabold text-[#2081C3]">{request.reward}</span></div>

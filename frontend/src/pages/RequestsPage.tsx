@@ -56,7 +56,6 @@ export default function RequestsPage({ requests, query, currentLocation, onViewO
           {availableCategories.map(value => <button key={value} type="button" onClick={() => setCategory(value)} aria-pressed={category === value} className={`flex min-w-[82px] flex-col items-center gap-2 px-4 py-3 text-xs font-semibold transition ${category === value ? "text-[#08679e]" : "text-slate-600 hover:text-[#2081C3]"}`}><Icon name={categoryIcons[value]} size={22} /><span>{value === "All" ? "All quests" : value}</span></button>)}
         </div></div>
         <div className="mt-4">
-          <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Sort quests</p>
           <div className="flex flex-wrap gap-2">
             {sortOptions.map(option => <button key={option.id} type="button" onClick={() => setSortBy(option.id)} aria-pressed={sortBy === option.id} className={`rounded-md border px-3 py-2 text-sm font-semibold transition ${sortBy === option.id ? "border-[#2081C3] bg-[#E5F1F3] text-[#08679e]" : "border-[#BED8D4] bg-white text-slate-600 hover:bg-[#E5F1F3]"}`}>{option.label}</button>)}
           </div>
