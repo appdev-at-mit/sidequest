@@ -310,10 +310,9 @@ export default function App() {
             {notifications.some(item => !item.readAt) && <span className="absolute right-2 top-2 h-2 w-2 rounded-full border-2 border-[#F7F9F9] bg-[#63D2FF]" />}
           </button>
           {(
-            <button onClick={() => setPostingRequest(true)} aria-label="Post a quest"
+            <button onClick={() => navigate("profile")} aria-label="My quests"
               className="flex shrink-0 items-center gap-1.5 rounded-lg bg-[#08679e] px-3 py-2 text-sm font-bold text-white hover:bg-[#075785]">
-              <span aria-hidden="true" className="text-base leading-none">+</span>
-              <span className="hidden min-[390px]:inline">Post a quest</span>
+              <span className="hidden min-[390px]:inline">My quests</span>
             </button>
           )}
         </div>
@@ -454,7 +453,7 @@ export default function App() {
   />
 )}
 
-      {page === "profile" && <ProfilePage refreshKey={requestsVersion} />}
+      {page === "profile" && <ProfilePage refreshKey={requestsVersion} onPostQuest={() => setPostingRequest(true)} onRequestDeleted={() => setRequestsVersion(version => version + 1)} />}
       {page === "admin" && isAdmin && <AdminPage />}
       {page === "users" && <UserLookupPage initialQuery={userSearchQuery} searchVersion={userSearchVersion} />}
       <ChatPopup request={selectedRequest} open={chatOpen} onClose={() => setChatOpen(false)} onUnreadChange={setChatUnread} />

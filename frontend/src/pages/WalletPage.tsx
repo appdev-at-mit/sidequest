@@ -37,7 +37,7 @@ export default function WalletPage() {
   return <main className="min-h-[calc(100dvh-64px)] bg-[#F7F9F9] px-5 py-8 sm:px-8">
     <section className="mx-auto max-w-4xl">
       <div className="rounded-2xl bg-[#102A3A] p-7 text-white shadow-sm sm:p-9">
-        <div className="mt-5 border-t border-white/20 pt-4"><p className="text-sm font-semibold text-white/75">Total reward earned</p><p className="mt-1 text-4xl font-extrabold">${(totalConfirmedEarningsCents / 100).toFixed(2)}</p></div>
+        <div><p className="text-lg font-semibold text-white/75 sm:text-xl">Total reward earned</p><p className="mt-1 text-5xl font-extrabold sm:text-6xl">${(totalConfirmedEarningsCents / 100).toFixed(2)}</p></div>
       </div>
       <div className="mt-6 max-w-2xl rounded-xl border border-[#BED8D4] bg-white p-5">
         <label className="block text-sm font-semibold">Preferred external payment method

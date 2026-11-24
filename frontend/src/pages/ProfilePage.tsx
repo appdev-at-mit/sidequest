@@ -35,7 +35,7 @@ type PostedRequest = {
 };
 
 
-export default function ProfilePage({ refreshKey }: { refreshKey: number }) {
+export default function ProfilePage({ refreshKey, onPostQuest, onRequestDeleted }: { refreshKey: number; onPostQuest: () => void; onRequestDeleted: () => void }) {
   const {isLoggedIn} = useAuth();
   const [profile, setProfile] = useState<UserProfile | null>(null);
 
@@ -59,6 +59,7 @@ export default function ProfilePage({ refreshKey }: { refreshKey: number }) {
       setPostedRequests((requests) =>
         requests.filter((request) => request._id !== id)
       );
+      onRequestDeleted();
     } catch {
       alert("Could not reach the server.");
     }
@@ -153,7 +154,7 @@ useEffect(() => {
 
             <section className="mt-5 grid gap-6 lg:grid-cols-2">
               <div className="min-w-0 border-t-2 border-[#2081C3] pt-4">
-                <h2 className="text-lg font-extrabold">Posted quests</h2>
+                <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-extrabold">My quests</h2><p className="mt-1 text-sm text-slate-500">View your current quests, post a new one, or delete an open quest.</p></div><button type="button" onClick={onPostQuest} className="rounded-lg bg-[#08679e] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#075785]">+ Post a quest</button></div>
                 <div className="divide-y divide-[#BED8D4]">
                 {requestsLoading ? <p className="py-5 text-sm text-slate-500">Loading quests...</p> : requestsError ? <p role="alert" className="py-5 text-sm">{requestsError}</p> : postedRequests.length === 0 ? <p className="py-5 text-sm text-slate-500">You haven’t posted any quests yet.</p> : postedRequests.map(request => <article key={request._id} className="flex items-center gap-4 py-5">
                     <div className="min-w-0 flex-1"><h3 className="font-bold">{request.title ?? request.description}</h3><p className="mt-1 text-xs capitalize text-slate-500">{request.status?.replaceAll("_", " ") ?? "open"} · {request.end ? `Deadline: ${new Date(request.end).toLocaleString()}` : "No deadline"}</p></div>
