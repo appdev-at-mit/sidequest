@@ -19,9 +19,16 @@ import type { Request } from "./data/requests";
 import { useAuth } from "./AuthContext";
 
 type Page = "map" | "requests" | "active" | "profile" | "complete" | "users" | "wallet";
+type UserSuggestion = { kerb: string; name: string; rating: number | null };
+const PAGE_NAMES = new Set<Page>(["map", "requests", "active", "profile", "complete", "users", "wallet"]);
+
+function pageFromLocation(): Page {
+  const requestedPage = new URLSearchParams(window.location.search).get("page");
+  return requestedPage && PAGE_NAMES.has(requestedPage as Page) ? requestedPage as Page : "map";
+}
 
 export default function App() {
-  const [page, setPage] = useState<Page>("map");
+  const [page, setPage] = useState<Page>(pageFromLocation);
   const [menuOpen, setMenuOpen] = useState(false);
   const { isLoggedIn, checkingSession, setIsLoggedIn, setUserName, userName, userKerb, setUserKerb } = useAuth();
   const [dropoffOpen, setDropoffOpen] = useState(false);
@@ -35,12 +42,16 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [userSearchQuery, setUserSearchQuery] = useState("");
   const [userSearchVersion, setUserSearchVersion] = useState(0);
+  const [userSuggestions, setUserSuggestions] = useState<UserSuggestion[]>([]);
+  const [userSuggestionsOpen, setUserSuggestionsOpen] = useState(false);
+  const [userSuggestionsLoading, setUserSuggestionsLoading] = useState(false);
   const [stage, setStage] = useState<1 | 2 | 3>(1);
   const [chatOpen, setChatOpen] = useState(false);
   const [chatUnread, setChatUnread] = useState(false);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [notifications, setNotifications] = useState<{ _id: string; type?: string; title: string; message: string; createdAt: string; readAt?: string | null }[]>([]);
   const menuRef = useRef<HTMLElement>(null);
+  const userSearchRef = useRef<HTMLFormElement>(null);
   const selectedRequest =
   requests.find((request) => request.id === selectedRequestId)
   ?? requests[0];
@@ -52,6 +63,12 @@ export default function App() {
   }, [page, selectedRequest?.id]);
 
   useEffect(() => {
+    const restorePage = () => setPage(pageFromLocation());
+    window.addEventListener("popstate", restorePage);
+    return () => window.removeEventListener("popstate", restorePage);
+  }, []);
+
+  useEffect(() => {
     if (!menuOpen) return;
     const closeOnOutsidePointer = (event: PointerEvent) => {
       if (event.target instanceof Node && !menuRef.current?.contains(event.target)) setMenuOpen(false);
@@ -59,6 +76,29 @@ export default function App() {
     document.addEventListener("pointerdown", closeOnOutsidePointer);
     return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
   }, [menuOpen]);
+
+  useEffect(() => {
+    const search = userSearchQuery.trim();
+    if (search.length < 2) { setUserSuggestions([]); setUserSuggestionsLoading(false); return; }
+    const controller = new AbortController();
+    setUserSuggestionsLoading(true);
+    const timer = window.setTimeout(() => {
+      fetch(`/api/users/search?q=${encodeURIComponent(search)}`, { signal: controller.signal })
+        .then(async response => response.ok ? response.json() : null)
+        .then(result => { if (!controller.signal.aborted) { setUserSuggestions(result?.data ?? []); setUserSuggestionsLoading(false); } })
+        .catch(() => { if (!controller.signal.aborted) { setUserSuggestions([]); setUserSuggestionsLoading(false); } });
+    }, 220);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [userSearchQuery]);
+
+  useEffect(() => {
+    if (!userSuggestionsOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && !userSearchRef.current?.contains(event.target)) setUserSuggestionsOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, [userSuggestionsOpen]);
 
 
   useEffect(() => {
@@ -164,6 +204,10 @@ export default function App() {
 
   function navigate(next: Page) {
     setPage(next);
+    const url = new URL(window.location.href);
+    if (next === "map") url.searchParams.delete("page");
+    else url.searchParams.set("page", next);
+    window.history.pushState({ page: next }, "", `${url.pathname}${url.search}${url.hash}`);
     setMenuOpen(false);
   }
   if (checkingSession) {
@@ -192,20 +236,37 @@ export default function App() {
           </button>
 
           <form
-            className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-full border border-[#BED8D4] bg-white px-4 focus-within:border-[#2081C3]"
-            onSubmit={(event) => { event.preventDefault(); if (userSearchQuery.trim().length >= 2) { setUserSearchVersion(version => version + 1); navigate("users"); } }}
+            ref={userSearchRef}
+            className="relative flex h-10 min-w-0 flex-1 items-center gap-2 rounded-full border border-[#BED8D4] bg-white px-4 focus-within:border-[#2081C3]"
+            onSubmit={(event) => { event.preventDefault(); if (userSearchQuery.trim().length >= 2) { setUserSuggestionsOpen(false); setUserSearchVersion(version => version + 1); navigate("users"); } }}
           >
             <Icon name="search" size={18} />
-            <label htmlFor="task-search" className="sr-only">
+            <label htmlFor="user-search" className="sr-only">
               Search users
             </label>
             <input
               id="user-search"
               value={userSearchQuery}
-              onChange={(event) => setUserSearchQuery(event.target.value)}
+              onFocus={() => setUserSuggestionsOpen(true)}
+              onChange={(event) => { setUserSearchQuery(event.target.value); setUserSuggestionsOpen(true); }}
+              aria-autocomplete="list"
+              aria-expanded={userSuggestionsOpen && userSuggestions.length > 0}
+              aria-controls="user-search-suggestions"
               placeholder="Search users by name or username"
               className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
             />
+            {userSuggestionsOpen && userSearchQuery.trim().length >= 2 && <div id="user-search-suggestions" role="listbox" aria-label="Matching user profiles" className="absolute left-0 right-0 top-12 z-[100] overflow-hidden rounded-xl border border-[#BED8D4] bg-white py-1 shadow-xl">
+              {userSuggestions.length ? userSuggestions.map(user => <button key={user.kerb} type="button" role="option" aria-selected="false" onClick={() => {
+                setUserSearchQuery(user.kerb);
+                setUserSuggestionsOpen(false);
+                setUserSearchVersion(version => version + 1);
+                navigate("users");
+              }} className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-[#EAF3F2]">
+                <Avatar initials={user.name.slice(0, 1).toUpperCase()} />
+                <span className="min-w-0 flex-1"><span className="block truncate text-sm font-bold text-[#102A3A]">{user.name}</span><span className="block truncate text-xs text-slate-500">{user.kerb}</span></span>
+                {user.rating != null && <span className="shrink-0 text-xs text-slate-500">★ {user.rating.toFixed(1)}</span>}
+              </button>) : <p className="px-4 py-3 text-sm text-slate-500">{userSuggestionsLoading ? "Searching profiles…" : "No matching profiles."}</p>}
+            </div>}
           </form>
 
           <button onClick={() => setNotificationOpen(open => !open)} className="relative grid h-10 w-10 shrink-0 place-items-center rounded-md text-slate-600 transition hover:bg-[#BED8D4]/30" aria-label="Notifications" aria-expanded={notificationOpen}>
@@ -254,8 +315,9 @@ export default function App() {
             <span className="ml-2"><span className="block font-bold">{userName || "Your profile"}</span><span className="text-xs font-medium text-[#2081C3]">Manage account</span></span>
           </button>
         </div>
-        <div className="flex h-[calc(100%-80px)] flex-col overflow-y-auto px-4 pb-0 pt-5">
+        <div className="flex h-[calc(100%-80px)] flex-col overflow-hidden px-4 pb-[5px] pt-5">
           {[
+            { label: "Profile", icon: "user" as const, target: "profile" as const },
             { label: "Quests", icon: "location" as const, target: "requests" as const },
             { label: "Map", icon: "location" as const, target: "map" as const },
             { label: "Active quest", icon: "bolt" as const, target: "active" as const },
@@ -282,7 +344,7 @@ export default function App() {
               {item.label !== "FAQ" && <span className="ml-auto"><Icon name="chevron" size={16} /></span>}
             </button>
           ))}
-          <div className="mt-auto translate-y-6">
+          <div className="mt-auto">
             <button onClick={() => {
               void fetch("/api/logout", { method: "DELETE" }).finally(() => {
                 setIsLoggedIn(false);
