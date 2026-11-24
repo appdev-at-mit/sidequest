@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { FormEvent } from "react";
 
 
 import L from "leaflet";
@@ -50,8 +51,21 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
   const [routeError, setRouteError] = useState("");
   const [stageError, setStageError] = useState("");
   const [actionBusy, setActionBusy] = useState<"cancel" | "progress" | "complete" | null>(null);
+  const [workflowBusy, setWorkflowBusy] = useState(false);
+  const [workflowError, setWorkflowError] = useState("");
+  const [reviewed, setReviewed] = useState(false);
+  const [reviewMessage, setReviewMessage] = useState("");
   const isRequester = selectedRequest.requester === currentKerb;
   const isHelper = selectedRequest.helper === currentKerb;
+  const questStatus = selectedRequest.status ?? "open";
+
+  useEffect(() => {
+    if (questStatus !== "completed" || (!isRequester && !isHelper)) return;
+    let live = true;
+    fetch(`/api/quests/${selectedRequest.id}/review-status`).then(response => response.ok ? response.json() : null)
+      .then(result => { if (live) setReviewed(Boolean(result?.reviewed)); }).catch(() => {});
+    return () => { live = false; };
+  }, [selectedRequest.id, questStatus, isRequester, isHelper]);
 
 
 
@@ -389,14 +403,6 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
       finally { setActionBusy(null); }
       return;
     }
-    setActionBusy("complete");
-    try {
-      const response = await fetch("/api/resolve-request", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ _id: String(selectedRequest.id) }) });
-      const result = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(result?.msg ?? "Could not complete quest.");
-      onComplete();
-    } catch (reason) { setStageError(reason instanceof Error ? reason.message : "Could not complete quest."); }
-    finally { setActionBusy(null); }
   }
 
   async function cancelQuest() {
@@ -411,6 +417,33 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
       onCancelled();
     } catch (reason) { setStageError(reason instanceof Error ? reason.message : "Could not cancel this quest."); }
     finally { setActionBusy(null); }
+  }
+
+  async function workflowAction(path: string, body?: unknown) {
+    setWorkflowBusy(true); setWorkflowError("");
+    try {
+      const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      const result = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(result?.msg ?? "Could not update this quest.");
+      onComplete();
+    } catch (reason) { setWorkflowError(reason instanceof Error ? reason.message : "Could not update this quest."); }
+    finally { setWorkflowBusy(false); }
+  }
+
+  async function submitReview(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const requesterRatings = { completionQuality: Number(form.get("completionQuality")), communication: Number(form.get("communication")), reliability: Number(form.get("reliability")) };
+    const completerRatings = { paymentReliability: Number(form.get("paymentReliability")), descriptionAccuracy: Number(form.get("descriptionAccuracy")), communication: Number(form.get("communication")) };
+    const ratings = isRequester ? requesterRatings : completerRatings;
+    setWorkflowBusy(true); setWorkflowError("");
+    try {
+      const response = await fetch(`/api/quests/${selectedRequest.id}/reviews`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ratings, text: form.get("text") }) });
+      const result = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(result?.msg ?? "Could not save the review.");
+      setReviewed(true); setReviewMessage("Review saved.");
+    } catch (reason) { setWorkflowError(reason instanceof Error ? reason.message : "Could not save the review."); }
+    finally { setWorkflowBusy(false); }
   }
   return (
 
@@ -608,8 +641,8 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
                   {actionBusy === "cancel" ? <span role="status" aria-label="Cancelling" className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" /> : "Cancel quest"}
                 </button>}
 
-                {isHelper && <button type="button" disabled={actionBusy !== null} onClick={() => { void advanceQuest(); }} className="inline-flex min-h-12 min-w-44 items-center justify-center gap-2 rounded-md bg-[#2081C3] px-5 py-3 text-sm font-bold text-white hover:bg-[#176FA9] disabled:opacity-70">
-                  {actionBusy === "progress" || actionBusy === "complete" ? <span role="status" aria-label="Saving progress" className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" /> : stage === 1 ? "Mark as In Progress" : stage === 2 ? "Mark pickup complete" : "Mark as delivered"}
+                {isHelper && questStatus === "in_progress" && <button type="button" disabled={actionBusy !== null} onClick={() => { void advanceQuest(); }} className="inline-flex min-h-12 min-w-44 items-center justify-center gap-2 rounded-md bg-[#2081C3] px-5 py-3 text-sm font-bold text-white hover:bg-[#176FA9] disabled:opacity-70">
+                  {actionBusy === "progress" ? <span role="status" aria-label="Saving progress" className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" /> : stage === 1 ? "Mark as In Progress" : stage === 2 ? "Mark pickup complete" : "Mark pickup complete"}
                 </button>}
 
 
@@ -626,6 +659,43 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
 
 
               </dl>
+
+              {(isRequester || isHelper) && <section className="mt-5 grid gap-4 border-t border-[#BED8D4] pt-5">
+                <h2 className="text-lg font-extrabold">Quest progress</h2>
+                <p className="text-sm font-semibold text-slate-700">Status: {questStatus.replaceAll("_", " ")}</p>
+                {questStatus === "in_progress" && isHelper && <form onSubmit={event => { event.preventDefault(); const values = new FormData(event.currentTarget); void workflowAction(`/api/requests/${selectedRequest.id}/completion`, { description: values.get("description"), evidence: values.get("evidence") }); }} className="grid gap-3 rounded-lg border border-[#BED8D4] bg-white p-4">
+                  <label className="grid gap-1 text-sm font-semibold">Describe the completed work<textarea name="description" required maxLength={2000} className="min-h-20 rounded-md border border-[#BED8D4] p-3 font-normal" /></label>
+                  <label className="grid gap-1 text-sm font-semibold">Evidence notes (optional)<textarea name="evidence" maxLength={4000} placeholder="Text only. Do not include sensitive information." className="min-h-16 rounded-md border border-[#BED8D4] p-3 font-normal" /></label>
+                  <button disabled={workflowBusy} className="w-fit rounded-md bg-[#2081C3] px-4 py-2 text-sm font-bold text-white disabled:opacity-60">{workflowBusy ? "Submitting…" : "Submit completion for review"}</button>
+                </form>}
+                {questStatus === "pending_review" && <div className="grid gap-2 rounded-lg border border-[#BED8D4] bg-white p-4 text-sm">
+                  <h3 className="font-bold">Completion submitted</h3><p>{selectedRequest.completionSubmission?.description}</p>{selectedRequest.completionSubmission?.evidence && <p className="text-slate-600">Evidence notes: {selectedRequest.completionSubmission.evidence}</p>}
+                  {isRequester && <button type="button" disabled={workflowBusy} onClick={() => void workflowAction(`/api/requests/${selectedRequest.id}/approve-completion`)} className="w-fit rounded-md bg-[#2081C3] px-4 py-2 font-bold text-white disabled:opacity-60">{workflowBusy ? "Saving…" : "Approve completion"}</button>}
+                  {isHelper && <p className="text-slate-600">Waiting for the requester to review the work.</p>}
+                </div>}
+                {questStatus === "awaiting_payment" && <div className="grid gap-2 rounded-lg border border-[#BED8D4] bg-white p-4 text-sm">
+                  <h3 className="font-bold">Arrange the reward directly</h3><p>SideQuest does not collect, hold, or verify payment. Contact the other participant if needed.</p>
+                  {selectedRequest.agreementSnapshot?.paymentMethod && <p>Preferred method: <strong>{selectedRequest.agreementSnapshot.paymentMethod}</strong></p>}
+                  {selectedRequest.agreementSnapshot?.paymentInstructions && <p>Payment details: {selectedRequest.agreementSnapshot.paymentInstructions}</p>}
+                  {isRequester && <button type="button" disabled={workflowBusy} onClick={() => void workflowAction(`/api/requests/${selectedRequest.id}/payment-sent`)} className="w-fit rounded-md bg-[#2081C3] px-4 py-2 font-bold text-white disabled:opacity-60">{workflowBusy ? "Saving…" : "I sent the reward"}</button>}
+                </div>}
+                {questStatus === "payment_sent" && <div className="grid gap-2 rounded-lg border border-[#BED8D4] bg-white p-4 text-sm">
+                  <p>The requester says they sent the reward. This is self-reported and has not been verified by SideQuest.</p>
+                  {isHelper && <button type="button" disabled={workflowBusy} onClick={() => void workflowAction(`/api/requests/${selectedRequest.id}/confirm-payment`)} className="w-fit rounded-md bg-[#2081C3] px-4 py-2 font-bold text-white disabled:opacity-60">{workflowBusy ? "Saving…" : "Confirm I received it"}</button>}
+                </div>}
+                {questStatus === "completed" && <p className="rounded-lg bg-[#E5F1F3] p-3 text-sm">Both participants have self-reported that the external reward was received. SideQuest does not verify the transaction.</p>}
+                {workflowError && <p role="alert" className="text-sm text-red-700">{workflowError}</p>}
+                {reviewMessage && <p role="status" className="text-sm text-green-700">{reviewMessage}</p>}
+                {questStatus === "completed" && !reviewed && <form onSubmit={submitReview} className="grid gap-3 rounded-lg border border-[#BED8D4] bg-white p-4">
+                  <h3 className="font-bold">Review this quest</h3>
+                  {(isRequester ? [["completionQuality", "Completion quality"], ["communication", "Communication"], ["reliability", "Reliability"]] : [["paymentReliability", "Payment reliability"], ["descriptionAccuracy", "Description accuracy"], ["communication", "Communication"]]).map(([name, label]) => <label key={name} className="flex items-center justify-between gap-3 text-sm">{label}<select name={name} required defaultValue="" className="rounded border border-[#BED8D4] p-2"><option value="" disabled>Rate</option>{[1, 2, 3, 4, 5].map(value => <option key={value} value={value}>{value} / 5</option>)}</select></label>)}
+                  <textarea name="text" maxLength={1000} placeholder="Optional written review" className="min-h-16 rounded-md border border-[#BED8D4] p-3 text-sm" />
+                  <button disabled={workflowBusy} className="w-fit rounded-md bg-[#2081C3] px-4 py-2 text-sm font-bold text-white disabled:opacity-60">{workflowBusy ? "Saving…" : "Submit review"}</button>
+                </form>}
+                {questStatus !== "disputed" && questStatus !== "cancelled" && questStatus !== "completed" && <form onSubmit={event => { event.preventDefault(); const values = new FormData(event.currentTarget); void workflowAction(`/api/requests/${selectedRequest.id}/disputes`, { reason: values.get("reason"), description: values.get("description"), evidence: values.get("evidence") }); }} className="grid gap-3 rounded-lg border border-amber-200 bg-amber-50/50 p-4">
+                  <h3 className="font-bold">Report a problem with this quest</h3><select name="reason" required defaultValue="" className="rounded-md border border-[#BED8D4] bg-white p-2 text-sm"><option value="" disabled>Choose a reason</option>{["Requester failed to pay", "Completer failed to complete the quest", "Quest requirements were misrepresented", "Payment amount was incorrect", "Harassment or inappropriate behavior", "Other"].map(reason => <option key={reason}>{reason}</option>)}</select><textarea name="description" required maxLength={2000} placeholder="Describe the issue" className="min-h-16 rounded-md border border-[#BED8D4] bg-white p-3 text-sm" /><textarea name="evidence" maxLength={4000} placeholder="Evidence notes (text only)" className="min-h-14 rounded-md border border-[#BED8D4] bg-white p-3 text-sm" /><button disabled={workflowBusy} className="w-fit rounded-md border border-amber-300 px-4 py-2 text-sm font-bold">{workflowBusy ? "Submitting…" : "Open a dispute"}</button>
+                </form>}
+              </section>}
 
 
             </section>

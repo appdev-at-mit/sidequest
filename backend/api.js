@@ -15,8 +15,39 @@ const sessionCookie = { httpOnly: true, sameSite: "lax", secure: production, pat
 const rememberDuration = 30 * 24 * 60 * 60 * 1000;
 
 app.use(express.json({ limit: "8mb" }));
+const writeRateLimits = new Map();
+function rateLimited(req, res, bucket, maxHits, windowMs = 60000) {
+    const now = Date.now();
+    const key = `${bucket}:${req.ip || req.socket.remoteAddress || "unknown"}`;
+    const current = writeRateLimits.get(key) ?? { count: 0, expires: now + windowMs };
+    if (current.expires <= now) { current.count = 0; current.expires = now + windowMs; }
+    current.count += 1;
+    writeRateLimits.set(key, current);
+    if (writeRateLimits.size > 5000) for (const [entry, value] of writeRateLimits) if (value.expires <= now) writeRateLimits.delete(entry);
+    if (current.count <= maxHits) return false;
+    res.status(429).json({ msg: "Too many requests. Please wait and try again." });
+    return true;
+}
+
 app.use("/api", (req, res, next) => {
     res.set("Cache-Control", "no-store");
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
+        const allowedOrigins = new Set();
+        for (const value of [process.env.APP_BASE_URL, process.env.FRONTEND_ORIGIN]) {
+            try { if (value) allowedOrigins.add(new URL(value).origin); } catch { /* Invalid configuration is ignored. */ }
+        }
+        if (!production) for (const value of ["http://localhost:5174", "http://127.0.0.1:5174", "http://localhost:3000", "http://127.0.0.1:3000"]) allowedOrigins.add(value);
+        const sameOrigin = `${req.protocol}://${req.get("host")}`;
+        const originHeader = req.get("origin");
+        let sourceOrigin = originHeader;
+        if (!sourceOrigin && req.get("referer")) {
+            try { sourceOrigin = new URL(req.get("referer")).origin; } catch { sourceOrigin = ""; }
+        }
+        if (!sourceOrigin || (!allowedOrigins.has(sourceOrigin) && sourceOrigin !== sameOrigin)
+            || req.get("sec-fetch-site") === "cross-site") {
+            return res.status(403).json({ msg: "Request origin could not be verified." });
+        }
+    }
     next();
 });
 app.use(session({
@@ -59,8 +90,24 @@ passport.deserializeUser(async (kerb, done) => {
     }
 })
 const db = new DBController();
-const { ratingSummary } = DBController;
+const { sanitizeText } = DBController;
 let dummyPasswordHash;
+
+function adminKerbs() {
+    return new Set((process.env.ADMIN_KERBS ?? "").split(",").map(value => value.trim()).filter(Boolean));
+}
+
+function requireAdmin(req, res) {
+    if (!req.isAuthenticated()) {
+        res.status(401).json({ msg: "You need to log in first." });
+        return false;
+    }
+    if (!adminKerbs().has(req.user.kerb)) {
+        res.status(403).json({ msg: "Administrator access is required." });
+        return false;
+    }
+    return true;
+}
 
 function validCredentials(kerb, password) {
     return typeof kerb === "string" && kerb.length > 0 && kerb.length <= 64
@@ -98,16 +145,8 @@ function summarizeQuestTitle(description) {
     });
 
 
-    app.get("/api/posting-limits", async (req, res) => {
-        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
-        const limits = await db.client.withSession(session => session.withTransaction(async () => {
-            const user = await db.users.findOne({ kerb: req.user.kerb }, { session });
-            return db.postingLimits(user, new Date(), session);
-        }, { readConcern: { level: "snapshot" } }));
-        res.json(limits);
-    });
-
     app.post("/api/post-request", async (req, res) => {
+        if (rateLimited(req, res, "post-request", 8, 60 * 60 * 1000)) return;
         if (!req.isAuthenticated()) {
             res.status(401).json({
                 result: "fail",
@@ -115,14 +154,15 @@ function summarizeQuestTitle(description) {
             })
             return;
         }
+        if (await db.userIsSuspended(req.user.kerb)) return res.status(403).json({ result: "fail", msg: "Your account is suspended and cannot post quests." });
         const { description, category, pay, start, end, lat, lng } = req.body ?? {};
-        const payoutCents = typeof pay === "number" ? Math.round(pay * 100) : NaN;
+        const rewardCents = typeof pay === "number" ? Math.round(pay * 100) : NaN;
         const hasLocation = lat != null || lng != null;
         if (!["Delivery", "Moving", "Home Help", "Tech", "Academic"].includes(category)) {
             return res.status(400).json({ result: "fail", msg: "Choose a quest category." });
         }
         if (typeof description !== "string" || !description.trim() || description.trim().length > 150
-            || !Number.isFinite(pay) || !Number.isSafeInteger(payoutCents) || payoutCents <= 0 || payoutCents / 100 !== pay) {
+            || !Number.isFinite(pay) || !Number.isSafeInteger(rewardCents) || rewardCents <= 0 || rewardCents / 100 !== pay) {
             return res.status(400).json({ result: "fail", msg: "Enter a description and a positive numeric reward amount." });
         }
         if (typeof start !== "string" || typeof end !== "string" || !(Date.parse(end) > Date.parse(start))) {
@@ -135,28 +175,28 @@ function summarizeQuestTitle(description) {
         const imageUrl = typeof req.body.imageUrl === "string" ? req.body.imageUrl : "";
         const validPhoto = imageUrl.length <= 7_000_000 && (!imageUrl || /^data:image\/(?:png|jpe?g|webp|gif);base64,[A-Za-z0-9+/]+=*$/i.test(imageUrl));
         if (!validPhoto) return res.status(400).json({ result: "fail", msg: "Choose an image under 5 MB in PNG, JPEG, WebP, or GIF format." });
-        const title = summarizeQuestTitle(description.trim());
+        const cleanDescription = sanitizeText(description, 150);
+        const title = summarizeQuestTitle(cleanDescription);
 
-        const { error, request } = await db.postRequest({
+        const request = await db.postRequest({
             requester: req.user.kerb,
-            description: description.trim(),
+            description: cleanDescription,
             title,
             category,
-            pay,
-            payoutCents,
+            rewardCents,
             start,
             end,
-            pickup: typeof req.body.pickup === "string" ? req.body.pickup.trim().slice(0, 200) : "",
-            dropoff: typeof req.body.dropoff === "string" ? req.body.dropoff.trim().slice(0, 200) : "",
+            pickup: sanitizeText(req.body.pickup, 200),
+            dropoff: sanitizeText(req.body.dropoff, 200),
             imageUrl,
-            rating: ratingSummary(req.user).rating,
             ...(hasLocation ? { lat, lng } : {}),
         });
-        if (error === "insufficient_funds") return res.status(409).json({ msg: "This reward exceeds your available balance." });
-        res.status(200).json({ result: "success", msg: "Created request", data: request });
+        if (!request) return res.status(403).json({ result: "fail", msg: "Your account is suspended and cannot post quests." });
+        res.status(201).json({ result: "success", msg: "Created quest", data: request });
     })
 
     app.post("/api/toggle-block", async (req, res) => {
+        if (rateLimited(req, res, "toggle-block", 30)) return;
         if (!req.isAuthenticated()) {
             res.status(401).json({
                 result: "fail",
@@ -164,15 +204,19 @@ function summarizeQuestTitle(description) {
             })
             return;
         }
-        const body = req.body;
-        await db.toggleBlock(req.user.kerb, body.dest);
+        const dest = req.body?.dest;
+        if (typeof dest !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(dest) || dest === req.user.kerb) return res.status(400).json({ msg: "Choose another valid user." });
+        const blocked = await db.toggleBlock(req.user.kerb, dest);
+        if (blocked == null) return res.status(404).json({ msg: "User not found." });
         res.status(200).json({
             result: "success",
-            msg: "Toggled block status"
+            blocked,
+            msg: blocked ? "User blocked." : "User unblocked."
         })
     })
 
     app.post("/api/signup", async (req, res) => {
+        if (rateLimited(req, res, "signup", 5, 60 * 60 * 1000)) return;
         const { kerb, name, password } = req.body ?? {};
         if (!validCredentials(kerb, password)
             || kerb.trim() !== kerb || !/^[a-zA-Z0-9_-]+$/.test(kerb)
@@ -196,6 +240,7 @@ function summarizeQuestTitle(description) {
     });
 
     app.post("/api/login", (req, res, next) => {
+        if (rateLimited(req, res, "login", 10, 15 * 60 * 1000)) return;
         const { kerb, password, remember } = req.body ?? {};
         const invalidLogin = () => res.status(401).json({
             result: "fail",
@@ -237,7 +282,7 @@ function summarizeQuestTitle(description) {
             })
             return;
         }
-        const requests = await db.getAllRequests();
+        const requests = await db.getAllRequests(req.user.kerb);
         const kerbs = [...new Set(requests.map(request => request.requester).filter(Boolean))];
         const owners = await db.users.find({ kerb: { $in: kerbs } }, { projection: { kerb: 1, name: 1 } }).toArray();
         const names = new Map(owners.map(owner => [owner.kerb, owner.name]));
@@ -254,93 +299,103 @@ function summarizeQuestTitle(description) {
             });
         }
 
-        const leaderboard = await db.getLeaderboard(req.user.kerb);
+        const [profile, leaderboard] = await Promise.all([db.getUserMetrics(req.user.kerb, true), db.getLeaderboard(null)]);
+        if (!profile) return res.status(404).json({ msg: "Profile not found." });
         res.json({
-            kerb: req.user.kerb,
-            ...ratingSummary(req.user),
+            ...profile,
             rank: leaderboard.findIndex(user => user.kerb === req.user.kerb) + 1,
-            name: req.user.name,
-            createdAt: req.user.createdAt ?? null,
-            earned: req.user.earned ?? 0,
-            quests: req.user.quests ?? 0
+            reviews: await db.publicReviews(req.user.kerb),
         });
     });
 
-    app.get("/api/stripe/connect/status", async (req, res) => {
-        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
-        if (!process.env.STRIPE_SECRET_KEY) return res.json({ configured: false, connected: false });
+    app.get("/api/user-profiles/:kerb", async (req, res, next) => {
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
+        if (!/^[a-zA-Z0-9_-]{1,64}$/.test(req.params.kerb)) return res.status(400).json({ msg: "Invalid username." });
         try {
-            const user = await db.users.findOne({ kerb: req.user.kerb }, { projection: { stripeAccountId: 1 } });
-            if (!user?.stripeAccountId) return res.json({ configured: true, connected: false });
-            const response = await fetch(`https://api.stripe.com/v1/accounts/${encodeURIComponent(user.stripeAccountId)}`, {
-                headers: { Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}` }
-            });
-            if (!response.ok) return res.status(502).json({ msg: "Could not check Stripe account status." });
-            const account = await response.json();
-            res.json({ configured: true, connected: Boolean(account.payouts_enabled), detailsSubmitted: Boolean(account.details_submitted) });
-        } catch {
-            res.status(502).json({ msg: "Could not check Stripe account status." });
-        }
+            if (await db.isBlockedEitherWay(req.user.kerb, req.params.kerb)) return res.status(404).json({ msg: "Profile not found." });
+            const profile = await db.getUserMetrics(req.params.kerb, req.params.kerb === req.user.kerb);
+            if (!profile) return res.status(404).json({ msg: "Profile not found." });
+            const { kerb, name, createdAt, identityVerificationStatus, postedQuests, completedQuests, confirmedPayments, paymentConfirmationRate, totalConfirmedEarningsCents, rating, reviewCount, reviews, preferredPaymentMethod, paymentInstructions, moderationStatus, strikes } = profile;
+            res.json({ kerb, name, createdAt, identityVerificationStatus, postedQuests, completedQuests, confirmedPayments, paymentConfirmationRate, totalConfirmedEarningsCents, rating, reviewCount, ...(req.params.kerb === req.user.kerb ? { preferredPaymentMethod, paymentInstructions, moderationStatus, strikes, reviews } : { reviews: await db.publicReviews(req.params.kerb) }) });
+        } catch (error) { next(error); }
     });
 
-    app.post("/api/stripe/connect/onboarding-link", async (req, res) => {
-        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
-        const stripeKey = process.env.STRIPE_SECRET_KEY;
-        const baseUrl = process.env.APP_BASE_URL;
-        if (!stripeKey || !baseUrl) {
-            return res.status(503).json({ msg: "Stripe setup is unavailable. Configure STRIPE_SECRET_KEY and APP_BASE_URL on the server." });
+    app.post("/api/payment-preference", async (req, res) => {
+        if (rateLimited(req, res, "payment-preference", 20)) return;
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
+        const { method, instructions } = req.body ?? {};
+        if (!DBController.PAYMENT_METHODS.includes(method) || typeof instructions !== "string" || instructions.length > 160) {
+            return res.status(400).json({ msg: "Choose a supported external payment method and keep instructions under 160 characters." });
         }
-        let origin;
+        await db.updatePaymentPreference(req.user.kerb, method, sanitizeText(instructions, 160));
+        res.json({ result: "success", msg: "Payment preference saved. It will be shared only with an accepted quest requester." });
+    });
+
+    app.get("/api/admin/status", (req, res) => {
+        res.json({ isAdmin: Boolean(req.isAuthenticated() && adminKerbs().has(req.user.kerb)) });
+    });
+
+    app.get("/api/admin/queue", async (req, res, next) => {
+        if (!requireAdmin(req, res)) return;
+        try { res.json(await db.adminQueue()); }
+        catch (error) { next(error); }
+    });
+
+    app.post("/api/admin/disputes/:id/resolve", async (req, res, next) => {
+        if (rateLimited(req, res, "admin-dispute", 30)) return;
+        if (!requireAdmin(req, res)) return;
+        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid dispute ID." });
+        const { outcome, decision } = req.body ?? {};
+        const cleanDecision = sanitizeText(decision, 2000);
+        if (!["restore", "cancel"].includes(outcome) || !cleanDecision) return res.status(400).json({ msg: "Choose an outcome and record an administrative decision." });
         try {
-            const parsed = new URL(baseUrl);
-            if (production && parsed.protocol !== "https:") throw new Error("HTTPS is required");
-            origin = parsed.origin;
-        } catch {
-            return res.status(503).json({ msg: "Stripe setup needs a valid APP_BASE_URL on the server." });
-        }
+            const result = await db.resolveDispute(req.params.id, req.user.kerb, outcome, cleanDecision);
+            if (!result) return res.status(409).json({ msg: "This dispute can no longer be resolved." });
+            res.json({ result: "success" });
+        } catch (error) { next(error); }
+    });
+
+    app.post("/api/admin/reports/:id/resolve", async (req, res, next) => {
+        if (rateLimited(req, res, "admin-report", 30)) return;
+        if (!requireAdmin(req, res)) return;
+        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid report ID." });
+        const decision = sanitizeText(req.body?.decision, 2000);
+        if (!decision) return res.status(400).json({ msg: "Record a review decision." });
         try {
-            const user = await db.users.findOne({ kerb: req.user.kerb }, { projection: { stripeAccountId: 1 } });
-            let accountId = user?.stripeAccountId;
-            if (!accountId) {
-                const accountParams = new URLSearchParams({
-                    type: "express",
-                    country: "US",
-                    "capabilities[transfers][requested]": "true"
-                });
-                const accountResponse = await fetch("https://api.stripe.com/v1/accounts", {
-                    method: "POST",
-                    headers: {
-                        Authorization: `Bearer ${stripeKey}`,
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "Idempotency-Key": `sidequest-connect-${Buffer.from(req.user.kerb).toString("hex")}`
-                    },
-                    body: accountParams
-                });
-                const account = await accountResponse.json();
-                if (!accountResponse.ok || !account.id) return res.status(502).json({ msg: "Stripe could not create a connected account." });
-                accountId = account.id;
-                await db.users.updateOne({ kerb: req.user.kerb }, { $set: { stripeAccountId: accountId } });
-            }
-            const linkParams = new URLSearchParams({
-                account: accountId,
-                refresh_url: `${origin}/?stripe=refresh`,
-                return_url: `${origin}/?stripe=return`,
-                type: "account_onboarding"
-            });
-            const linkResponse = await fetch("https://api.stripe.com/v1/account_links", {
-                method: "POST",
-                headers: { Authorization: `Bearer ${stripeKey}`, "Content-Type": "application/x-www-form-urlencoded" },
-                body: linkParams
-            });
-            const link = await linkResponse.json();
-            if (!linkResponse.ok || !link.url) return res.status(502).json({ msg: "Stripe could not start account setup." });
-            res.json({ url: link.url });
-        } catch {
-            res.status(502).json({ msg: "Could not connect to Stripe. Please try again." });
-        }
+            const report = await db.resolveUserReport(req.params.id, req.user.kerb, decision);
+            if (!report) return res.status(409).json({ msg: "This report was already reviewed." });
+            res.json({ result: "success" });
+        } catch (error) { next(error); }
+    });
+
+    app.post("/api/admin/users/:kerb/moderate", async (req, res, next) => {
+        if (rateLimited(req, res, "admin-moderation", 30)) return;
+        if (!requireAdmin(req, res)) return;
+        if (!/^[a-zA-Z0-9_-]{1,64}$/.test(req.params.kerb)) return res.status(400).json({ msg: "Invalid username." });
+        const note = sanitizeText(req.body?.note, 1000);
+        try {
+            const result = await db.moderateUser(req.params.kerb, req.user.kerb, req.body?.action, note);
+            if (!result) return res.status(404).json({ msg: "User not found or moderation action is invalid." });
+            res.json({ result: "success", data: result });
+        } catch (error) { next(error); }
+    });
+
+    app.post("/api/admin/reports/:id/moderate", async (req, res, next) => {
+        if (rateLimited(req, res, "admin-report-moderation", 30)) return;
+        if (!requireAdmin(req, res)) return;
+        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id) || !/^[a-zA-Z0-9_-]{1,64}$/.test(req.body?.target ?? "")) return res.status(400).json({ msg: "Invalid report or user." });
+        const note = sanitizeText(req.body?.note, 1000);
+        const decision = sanitizeText(req.body?.decision, 2000);
+        if (!note || !decision) return res.status(400).json({ msg: "Record an administrative note and decision." });
+        try {
+            const result = await db.moderateUserFromReport(req.params.id, req.user.kerb, req.body.target, req.body.action, note, decision);
+            if (!result) return res.status(409).json({ msg: "This report was already reviewed or the action is invalid." });
+            res.json({ result: "success", data: result });
+        } catch (error) { next(error); }
     });
 
     app.get("/api/users/search", async (req, res, next) => {
+        if (rateLimited(req, res, "user-search", 60)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
         const query = typeof req.query.q === "string" ? req.query.q.trim().slice(0, 80) : "";
         if (query.length < 2) return res.status(400).json({ msg: "Enter at least two characters." });
@@ -364,6 +419,7 @@ function summarizeQuestTitle(description) {
 
     app.post("/api/feedback", async (req, res, next) => {
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
+        if (rateLimited(req, res, "feedback", 10, 60 * 60 * 1000)) return;
         const kind = req.body?.kind;
         const message = typeof req.body?.message === "string" ? req.body.message.trim() : "";
         if (!["idea", "bug", "other"].includes(kind) || !message || message.length > 2000) {
@@ -377,7 +433,7 @@ function summarizeQuestTitle(description) {
 
     app.get("/api/leaderboard", async (req, res, next) => {
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
-        try { res.json({ data: (await db.getLeaderboard(req.user.kerb)).slice(0, 7) }); }
+        try { res.json({ data: (await db.getLeaderboard(req.user.kerb)).slice(0, 5) }); }
         catch (error) { next(error); }
     });
 
@@ -386,7 +442,8 @@ function summarizeQuestTitle(description) {
         if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid request ID" });
         try {
             const request = await db.getRequestById(req.params.id);
-            if (!request || ![request.requester, request.helper].includes(req.user.kerb)) return res.status(403).json({ msg: "Chat is available to the requester and assigned helper." });
+            if (!request?.helper || ![request.requester, request.helper].includes(req.user.kerb)) return res.status(403).json({ msg: "Chat is available after a quest has been accepted, to the requester and assigned completer." });
+            if (await db.isBlockedEitherWay(request.requester, request.helper)) return res.status(403).json({ msg: "Messaging is unavailable between these users." });
             const messages = await db.getQuestMessages(req.params.id, typeof req.query.since === "string" ? req.query.since : null);
             res.json({ data: messages.map(message => ({ sender: message.sender, text: message.text, createdAt: message.createdAt, own: message.sender === req.user.kerb })) });
         } catch (error) { next(error); }
@@ -399,7 +456,8 @@ function summarizeQuestTitle(description) {
         if (!text || text.length > 2000) return res.status(400).json({ msg: "Enter a message under 2,000 characters." });
         try {
             const request = await db.getRequestById(req.params.id);
-            if (!request || ![request.requester, request.helper].includes(req.user.kerb)) return res.status(403).json({ msg: "Chat is available to the requester and assigned helper." });
+            if (!request?.helper || ![request.requester, request.helper].includes(req.user.kerb)) return res.status(403).json({ msg: "Chat is available after a quest has been accepted, to the requester and assigned completer." });
+            if (await db.isBlockedEitherWay(request.requester, request.helper)) return res.status(403).json({ msg: "Messaging is unavailable between these users." });
             const message = await db.addQuestMessage(req.params.id, req.user.kerb, text);
             const recipient = request.requester === req.user.kerb ? request.helper : request.requester;
             if (recipient) await db.addNotification(recipient, {
@@ -458,6 +516,7 @@ function summarizeQuestTitle(description) {
     });
 
     app.post("/api/connect-request", async (req, res) => {
+        if (rateLimited(req, res, "accept-quest", 20)) return;
         if (!req.isAuthenticated()) {
             res.status(401).json({
                 result: "fail",
@@ -465,12 +524,13 @@ function summarizeQuestTitle(description) {
             })
             return;
         }
+        if (await db.userIsSuspended(req.user.kerb)) return res.status(403).json({ result: "fail", msg: "Your account is suspended and cannot accept quests." });
         try {
             const _id = req.body._id;
             if (typeof _id !== "string" || !/^[0-9a-fA-F]{24}$/.test(_id)) return res.status(400).json({ result: "fail", msg: "Invalid request ID" });
             const request = await db.getRequestById(_id);
             const connected = await db.connectRequest(_id, req.user.kerb);
-            if (!connected) return res.status(409).json({ result: "fail", msg: "This request is no longer available." });
+            if (!connected) return res.status(409).json({ result: "fail", msg: "This quest is unavailable, expired, or blocked between these users." });
             if (request?.requester) await db.addNotification(request.requester, {
                 type: "accepted", title: "Quest accepted", message: `${req.user.name || req.user.kerb} accepted “${request.description}”.`, requestId: _id,
             });
@@ -485,6 +545,7 @@ function summarizeQuestTitle(description) {
         }
     })
     app.post("/api/requests/:id/progress", async (req, res, next) => {
+        if (rateLimited(req, res, "quest-progress", 30)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
         if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid request ID" });
         const stage = req.body.stage;
@@ -501,6 +562,7 @@ function summarizeQuestTitle(description) {
     });
 
     app.post("/api/requests/:id/cancel", async (req, res, next) => {
+        if (rateLimited(req, res, "quest-cancel", 15)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
         if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid request ID" });
         try {
@@ -511,50 +573,120 @@ function summarizeQuestTitle(description) {
             if (recipient) await db.addNotification(recipient, {
                 type: "cancelled", title: "Quest cancelled", message: isRequester
                     ? `${req.user.name || req.user.kerb} cancelled “${request.description}”.`
-                    : `${req.user.name || req.user.kerb} cancelled their assignment for “${request.description}”; the quest is available again.`, requestId: req.params.id,
+                    : `${req.user.name || req.user.kerb} cancelled their assignment for “${request.description}”. The quest is closed.`, requestId: req.params.id,
             });
             res.json({ result: "success" });
         } catch (error) { next(error); }
     });
 
-    app.post("/api/resolve-request", async (req, res) => {
-        if (!req.isAuthenticated()) {
-            res.status(401).json({
-                result: "fail",
-                msg: "You need to log in first"
-            })
-            return;
-        }
+    app.post("/api/requests/:id/completion", async (req, res, next) => {
+        if (rateLimited(req, res, "quest-completion", 15)) return;
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
+        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
+        const description = sanitizeText(req.body?.description, 2000);
+        const evidence = sanitizeText(req.body?.evidence, 4000);
+        if (!description) return res.status(400).json({ msg: "Describe the completed work before submitting it for review." });
         try {
-            const _id = req.body._id;
-            if (typeof _id !== "string" || !/^[0-9a-fA-F]{24}$/.test(_id)) return res.status(400).json({ result: "fail", msg: "Invalid request ID" });
-            const request = await db.resolveRequest(_id, req.user.kerb);
-            if (!request) return res.status(409).json({ result: "fail", msg: "Could not complete this quest." });
-            if (request.requester) await db.addNotification(request.requester, {
-                type: "completed", title: "Quest delivered", message: `“${request.description}” was marked complete.`, requestId: _id,
-            });
-            res.status(200).json({
-                result: "success",
-                msg: "resolved request"
-            })
-        } catch (e) {
-            res.status(400).json({
-                result: "fail",
-                msg: "Bad request"
-            })
+            const quest = await db.submitCompletion(req.params.id, req.user.kerb, description, evidence);
+            if (!quest) return res.status(409).json({ msg: "Only the assigned completer can submit completion while the quest is in progress." });
+            await db.addNotification(quest.requester, { type: "pending_review", title: "Quest ready for review", message: `${req.user.name || req.user.kerb} submitted completion for “${quest.title ?? quest.description}”.`, requestId: req.params.id });
+            res.json({ result: "success", status: quest.status });
+        } catch (error) { next(error); }
+    });
+
+    app.post("/api/requests/:id/approve-completion", async (req, res, next) => {
+        if (rateLimited(req, res, "quest-approval", 15)) return;
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
+        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
+        try {
+            const quest = await db.approveCompletion(req.params.id, req.user.kerb);
+            if (!quest) return res.status(409).json({ msg: "Only the requester can approve a submitted completion." });
+            await db.addNotification(quest.helper, { type: "awaiting_payment", title: "Completion approved", message: `The requester approved “${quest.title ?? quest.description}”. Arrange the external reward payment.`, requestId: req.params.id });
+            res.json({ result: "success", status: quest.status });
+        } catch (error) { next(error); }
+    });
+
+    app.post("/api/requests/:id/payment-sent", async (req, res, next) => {
+        if (rateLimited(req, res, "payment-sent", 15)) return;
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
+        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
+        try {
+            const quest = await db.markPaymentSent(req.params.id, req.user.kerb);
+            if (!quest) return res.status(409).json({ msg: "Only the requester can mark payment sent after approving completion." });
+            await db.addNotification(quest.helper, { type: "payment_sent", title: "Requester says payment was sent", message: `The requester marked the reward as sent for “${quest.title ?? quest.description}”. Confirm only after you receive it.`, requestId: req.params.id });
+            res.json({ result: "success", status: quest.status, verified: false });
+        } catch (error) { next(error); }
+    });
+
+    app.post("/api/requests/:id/confirm-payment", async (req, res, next) => {
+        if (rateLimited(req, res, "payment-confirmation", 15)) return;
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
+        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
+        try {
+            const quest = await db.confirmPaymentReceived(req.params.id, req.user.kerb);
+            if (!quest) return res.status(409).json({ msg: "Only the assigned completer can confirm receipt after payment was marked sent." });
+            await db.addNotification(quest.requester, { type: "completed", title: "Payment receipt confirmed", message: `The completer confirmed receiving the external reward for “${quest.title ?? quest.description}”.`, requestId: req.params.id });
+            res.json({ result: "success", status: quest.status, selfReportedByCompleter: true });
+        } catch (error) { next(error); }
+    });
+
+    app.post("/api/requests/:id/disputes", async (req, res, next) => {
+        if (rateLimited(req, res, "quest-dispute", 10, 60 * 60 * 1000)) return;
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
+        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
+        const { reason } = req.body ?? {};
+        const description = sanitizeText(req.body?.description, 2000);
+        const evidence = sanitizeText(req.body?.evidence, 4000);
+        if (!DBController.DISPUTE_REASONS.includes(reason) || !description) return res.status(400).json({ msg: "Choose a dispute reason and explain the issue." });
+        try {
+            const dispute = await db.openDispute(req.params.id, req.user.kerb, reason, description, evidence);
+            if (!dispute) return res.status(409).json({ msg: "Only quest participants can dispute an active transaction." });
+            const other = dispute.reporter === dispute.requester ? dispute.completer : dispute.requester;
+            await db.addNotification(other, { type: "disputed", title: "Quest disputed", message: `A participant opened a dispute for quest ${req.params.id}.`, requestId: req.params.id });
+            res.status(201).json({ result: "success", disputeId: String(dispute._id) });
+        } catch (error) { next(error); }
+    });
+
+    app.post("/api/quests/:id/reviews", async (req, res, next) => {
+        if (rateLimited(req, res, "quest-review", 20)) return;
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
+        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
+        const ratings = req.body?.ratings;
+        const text = sanitizeText(req.body?.text, 1000);
+        if (!ratings || typeof ratings !== "object" || Array.isArray(ratings) || Object.values(ratings).some(value => !Number.isInteger(value) || value < 1 || value > 5)) return res.status(400).json({ msg: "Use a 1–5 star rating for each category." });
+        try {
+            const review = await db.submitReview(req.params.id, req.user.kerb, ratings, text);
+            if (!review) return res.status(403).json({ msg: "Reviews are available to the two participants after payment receipt is confirmed." });
+            res.status(201).json({ result: "success", data: { id: String(review._id), createdAt: review.createdAt } });
+        } catch (error) {
+            if (error.code === 11000) return res.status(409).json({ msg: "You have already reviewed this quest." });
+            next(error);
         }
-    })
-    app.post("/api/rate-user", async (req, res) => {
-        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
-        const { kerb, rating } = req.body ?? {};
-        if (typeof kerb !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(kerb)
-            || !/^[a-zA-Z0-9_-]{1,64}$/.test(req.user.kerb) || kerb === req.user.kerb
-            || !Number.isInteger(rating) || rating < 1 || rating > 5) {
-            return res.status(400).json({ msg: "Choose a rating from 1 to 5 for another user." });
-        }
-        const summary = await db.rateUser(kerb, req.user.kerb, rating);
-        if (!summary) return res.status(403).json({ msg: "You can rate users after completing a quest together." });
-        res.json({ ...summary, yourRating: rating });
+    });
+
+    app.get("/api/quests/:id/review-status", async (req, res, next) => {
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
+        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
+        try {
+            const quest = await db.getRequestById(req.params.id);
+            if (!quest || ![quest.requester, quest.helper].includes(req.user.kerb)) return res.status(403).json({ msg: "Only quest participants can view review status." });
+            res.json({ reviewed: await db.hasReviewed(req.params.id, req.user.kerb) });
+        } catch (error) { next(error); }
+    });
+
+    app.post("/api/user-reports", async (req, res, next) => {
+        if (rateLimited(req, res, "user-report", 10, 60 * 60 * 1000)) return;
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
+        const subject = req.body?.subject;
+        const reason = req.body?.reason;
+        const description = sanitizeText(req.body?.description, 2000);
+        const evidence = sanitizeText(req.body?.evidence, 4000);
+        if (typeof subject !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(subject) || !DBController.USER_REPORT_REASONS.includes(reason) || !description) return res.status(400).json({ msg: "Choose a reason and describe the report." });
+        try {
+            const report = await db.createUserReport(req.user.kerb, subject, reason, description, evidence);
+            if (!report) return res.status(400).json({ msg: "You cannot report yourself or an unknown user." });
+            res.status(201).json({ result: "success", msg: "Report submitted for review. A report alone does not result in an automatic penalty." });
+        } catch (error) { next(error); }
     });
 
     app.get("/", async (req, res) => {

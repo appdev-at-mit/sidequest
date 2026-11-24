@@ -10,6 +10,7 @@ type Props = {
   requests: Request[];
   query: string;
   selectedRequestId: string | number;
+  currentKerb: string;
   setSelectedRequestId: (id: string | number) => void;
   onAccept: () => void;
 };
@@ -18,6 +19,7 @@ export default function ExploreTasks({
   requests,
   query,
   selectedRequestId,
+  currentKerb,
   setSelectedRequestId,
   onAccept,
 }: Props) {
@@ -35,7 +37,7 @@ export default function ExploreTasks({
   const visibleRequests = useMemo(() => {
     const normalized = query.trim().toLowerCase();
     return requests.filter(
-      (request) => !request.expired &&
+      (request) => (request.status ?? "open") === "open" && !request.expired &&
       (
         (!normalized ||
           request.title.toLowerCase().includes(normalized) ||
@@ -254,15 +256,15 @@ export default function ExploreTasks({
           </div>
 
           <div className="border-t border-[#BED8D4] p-5">
-            <button
+            {selectedRequest.status === "open" && selectedRequest.requester !== null && selectedRequest.requester !== currentKerb && <button
               onClick={() => {
                 setSelectedRequestId(selectedRequest.id);
                 onAccept();
               }}
               className="w-full rounded-md bg-[#2081C3] py-3.5 text-sm font-bold text-white"
             >
-              Accept Task
-            </button>
+              Accept quest
+            </button>}
           </div>
         </aside>
       )}

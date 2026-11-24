@@ -1,74 +1,56 @@
 import { useEffect, useState } from "react";
 
-type WalletProfile = { earned?: number; quests?: number };
-type StripeStatus = { configured: boolean; connected: boolean; detailsSubmitted?: boolean };
-const METHODS = ["Stripe Connect", "PayPal", "Venmo", "Cash App", "Debit or credit card", "Bank transfer"];
+type WalletProfile = { preferredPaymentMethod?: string; paymentInstructions?: string };
+const METHODS = ["Cash", "PayPal", "Venmo", "Cash App", "Zelle", "Other"];
 
 export default function WalletPage() {
-  const [profile, setProfile] = useState<WalletProfile>({});
-  const [method, setMethod] = useState(() => {
-    const savedMethod = localStorage.getItem("sidequest-payout-preference");
-    return savedMethod && METHODS.includes(savedMethod) ? savedMethod : METHODS[0];
-  });
-  const [saved, setSaved] = useState(false);
-  const [stripeStatus, setStripeStatus] = useState<StripeStatus | null>(null);
-  const [stripeBusy, setStripeBusy] = useState(false);
+  const [method, setMethod] = useState("Cash");
+  const [instructions, setInstructions] = useState("");
+  const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
 
   useEffect(() => {
-    fetch("/api/profile").then(response => response.ok ? response.json() : null).then(data => { if (data) setProfile(data); }).catch(() => {});
-    fetch("/api/stripe/connect/status").then(async response => {
-      const result = await response.json();
-      if (response.ok) setStripeStatus(result);
+    fetch("/api/profile").then(response => response.ok ? response.json() : null).then((data: WalletProfile | null) => {
+      if (!data) return;
+      if (data.preferredPaymentMethod && METHODS.includes(data.preferredPaymentMethod)) setMethod(data.preferredPaymentMethod);
+      setInstructions(data.paymentInstructions ?? "");
     }).catch(() => {});
   }, []);
 
-  async function connectStripe() {
-    localStorage.setItem("sidequest-payout-preference", "Stripe Connect");
-    setMethod("Stripe Connect");
-    setStripeBusy(true);
-    setError("");
+  async function savePreference() {
+    setBusy(true); setNotice(""); setError("");
     try {
-      const response = await fetch("/api/stripe/connect/onboarding-link", { method: "POST" });
-      const result = await response.json();
-      if (!response.ok || !result.url) throw new Error(result.msg ?? "Could not start Stripe setup.");
-      window.location.assign(result.url);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not start Stripe setup.");
-      setStripeBusy(false);
-    }
+      const response = await fetch("/api/payment-preference", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ method, instructions }),
+      });
+      const result = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(result?.msg ?? "Could not save your payment preference.");
+      setNotice("Payment preference saved. It will be locked into the next quest acceptance agreement.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save your payment preference."); }
+    finally { setBusy(false); }
   }
 
   return <main className="min-h-[calc(100dvh-64px)] bg-[#F7F9F9] px-5 py-8 sm:px-8">
     <section className="mx-auto max-w-4xl">
-      <h1 className="text-3xl font-extrabold">Wallet</h1>
-      <div className="mt-5 rounded-2xl bg-[#102A3A] px-6 py-5 text-white shadow-sm">
-        <p className="text-sm font-semibold text-white/70">Total rewards earned</p>
-        <p className="mt-1 text-4xl font-extrabold">{(profile.earned ?? 0).toFixed(2)}</p>
-        <p className="mt-1 text-sm text-white/70">{profile.quests ?? 0} completed quests</p>
-      </div>
-
-      <section className="mt-6">
-        <label className="block text-sm font-semibold">Preferred payment method
-          <select value={method} onChange={event => { setMethod(event.target.value); setSaved(false); setNotice(""); }} className="mt-2 w-full rounded-lg border border-[#BED8D4] bg-white p-3">
+      <h1 className="text-3xl font-extrabold">Reward payment preference</h1>
+      <div className="mt-5 max-w-2xl rounded-xl border border-[#BED8D4] bg-white p-5">
+        <label className="block text-sm font-semibold">Preferred external payment method
+          <select value={method} onChange={event => setMethod(event.target.value)} className="mt-2 w-full rounded-lg border border-[#BED8D4] bg-white p-3">
             {METHODS.map(item => <option key={item}>{item}</option>)}
           </select>
         </label>
-        <div className="mt-4 flex flex-wrap gap-3">
-          <button onClick={() => { localStorage.setItem("sidequest-payout-preference", method); setSaved(true); setNotice("Preference saved."); }} className="rounded-lg bg-[#08679e] px-5 py-3 text-sm font-bold text-white hover:bg-[#075785]">
-            {saved ? "Preference saved" : "Save preference"}
-          </button>
-          {method === "Stripe Connect" && <button disabled={stripeBusy} onClick={connectStripe} className="rounded-lg border border-[#BED8D4] bg-white px-5 py-3 text-sm font-bold text-[#08679e] disabled:opacity-60">
-            {stripeBusy ? "Opening Stripe…" : stripeStatus?.connected ? "Manage Stripe account" : "Set up Stripe payouts"}
-          </button>}
-        </div>
+        <label className="mt-4 block text-sm font-semibold">Payment instructions for an accepted requester
+          <input value={instructions} onChange={event => setInstructions(event.target.value)} maxLength={160} placeholder="Optional handle or cash meetup details" className="mt-2 w-full rounded-lg border border-[#BED8D4] bg-white p-3 font-normal" />
+          <span className="mt-1 block text-xs font-normal text-slate-500">Only the requester on an accepted quest can see this. Don’t include passwords or account credentials.</span>
+        </label>
+        <button disabled={busy} onClick={() => void savePreference()} className="mt-4 rounded-lg bg-[#08679e] px-5 py-3 text-sm font-bold text-white disabled:opacity-60">{busy ? "Saving…" : "Save preference"}</button>
         {notice && <p role="status" className="mt-3 text-sm text-slate-600">{notice}</p>}
         {error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}
-        {stripeStatus?.connected && <p className="mt-3 text-sm text-emerald-800">Stripe account connected. Stripe manages your sensitive payout details.</p>}
-        {!stripeStatus?.configured && method === "Stripe Connect" && <p className="mt-3 text-sm text-slate-600">Stripe setup is not configured on this server yet.</p>}
-        <p className="mt-4 max-w-3xl text-xs leading-5 text-slate-500">Payment method choices are saved as preferences. Stripe Connect opens Stripe’s hosted setup so SideQuest does not collect or store card or bank details. PayPal, Venmo, Cash App, and direct card integrations are not active yet; live quest payments and transfers also require a configured Stripe platform and payment flow.</p>
-      </section>
+      </div>
+      <p className="mt-5 max-w-3xl text-sm leading-6 text-slate-600">SideQuest facilitates quest agreements and records each participant’s confirmation. Payment happens directly between students through the selected method or cash. SideQuest does not process, hold, guarantee, verify, insure, recover, or reverse external payments.</p>
+      <p className="mt-2 max-w-3xl text-xs leading-5 text-slate-500">After a requester marks payment sent, the completer must confirm receipt before the quest is recorded as completed. These confirmations are self-reported.</p>
     </section>
   </main>;
 }

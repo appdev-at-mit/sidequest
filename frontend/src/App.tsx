@@ -5,7 +5,7 @@ import ActiveQuest from "./pages/ActiveQuest";
 import ProfilePage from "./pages/ProfilePage";
 import SignIn from "./pages/SignIn";
 import PostRequestDialog from "./components/PostRequestDialog";
-import CompleteQuest from "./pages/CompleteQuest";
+import AdminPage from "./pages/AdminPage";
 import UserLookupPage from "./pages/UserLookupPage";
 import RequestsPage from "./pages/RequestsPage";
 import WalletPage from "./pages/WalletPage";
@@ -18,9 +18,9 @@ import FeedbackDialog from "./components/FeedbackDialog";
 import type { Request } from "./data/requests";
 import { useAuth } from "./AuthContext";
 
-type Page = "map" | "requests" | "active" | "profile" | "complete" | "users" | "wallet";
+type Page = "map" | "requests" | "active" | "profile" | "admin" | "users" | "wallet";
 type UserSuggestion = { kerb: string; name: string; rating: number | null };
-const PAGE_NAMES = new Set<Page>(["map", "requests", "active", "profile", "complete", "users", "wallet"]);
+const PAGE_NAMES = new Set<Page>(["map", "requests", "active", "profile", "admin", "users", "wallet"]);
 
 function pageFromLocation(): Page {
   const requestedPage = new URLSearchParams(window.location.search).get("page");
@@ -36,6 +36,7 @@ export default function App() {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [postingRequest, setPostingRequest] = useState(false);
   const [requestsVersion, setRequestsVersion] = useState(0);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [requests, setRequests] = useState<Request[]>([]);
   const [requestsError, setRequestsError] = useState("");
   const [selectedRequestId, setSelectedRequestId] = useState<string | number>("");
@@ -55,6 +56,11 @@ export default function App() {
   const selectedRequest =
   requests.find((request) => request.id === selectedRequestId)
   ?? requests[0];
+
+  useEffect(() => {
+    if (!isLoggedIn) { setIsAdmin(false); return; }
+    fetch("/api/admin/status").then(response => response.ok ? response.json() : null).then(result => setIsAdmin(Boolean(result?.isAdmin))).catch(() => setIsAdmin(false));
+  }, [isLoggedIn]);
 
   useEffect(() => {
     if (page !== "active" || !selectedRequest) return;
@@ -128,6 +134,7 @@ export default function App() {
         description: string;
         category?: string;
         pay: number;
+        rewardCents?: number;
         requester: string | null;
         requesterName?: string | null;
         lat?: number;
@@ -141,17 +148,27 @@ export default function App() {
         expired?: boolean;
         rating?: number;
         imageUrl?: string;
-        status?: number;
+        status?: string | number;
         questStage?: number;
         helper?: string | null;
+        acceptedAt?: string;
+        agreementSnapshot?: Request["agreementSnapshot"];
+        completionSubmission?: Request["completionSubmission"];
+        requesterApprovedAt?: string;
+        paymentSentAt?: string;
+        paymentConfirmedAt?: string;
+        progressHistory?: { stage: string; at: string }[];
       };
+
+      const legacyStatus: Record<number, Request["status"]> = { 0: "open", 1: "in_progress", 2: "pending_review", 3: "cancelled" };
 
       const loaded: Request[] = result.data.map(
         (request: DatabaseRequest) => ({
           id: request._id,
           title: request.title ?? request.description,
           description: request.description,
-          reward: Number(request.pay).toFixed(2),
+          reward: ((request.rewardCents ?? Math.round(Number(request.pay) * 100)) / 100).toFixed(2),
+          rewardCents: request.rewardCents ?? Math.round(Number(request.pay) * 100),
           poster: request.requesterName ?? request.requester ?? "Unknown user",
           category: request.category ?? "Uncategorized",
           location: request.pickup || (request.lat != null && request.lng != null
@@ -169,10 +186,17 @@ export default function App() {
           expired: request.expired ?? false,
           rating: request.rating ?? null,
           imageUrl: request.imageUrl ?? null,
-          status: request.status,
+          status: typeof request.status === "number" ? legacyStatus[request.status] ?? "open" : request.status as Request["status"],
           questStage: request.questStage,
           helper: request.helper ?? null,
           requester: request.requester ?? null,
+          acceptedAt: request.acceptedAt ?? null,
+          agreementSnapshot: request.agreementSnapshot,
+          completionSubmission: request.completionSubmission,
+          requesterApprovedAt: request.requesterApprovedAt ?? null,
+          paymentSentAt: request.paymentSentAt ?? null,
+          paymentConfirmedAt: request.paymentConfirmedAt ?? null,
+          progressHistory: request.progressHistory ?? [],
         })
       );
 
@@ -317,11 +341,11 @@ export default function App() {
         </div>
         <div className="flex h-[calc(100%-80px)] flex-col overflow-hidden px-4 pb-[5px] pt-5">
           {[
-            { label: "Profile", icon: "user" as const, target: "profile" as const },
             { label: "Quests", icon: "location" as const, target: "requests" as const },
             { label: "Map", icon: "location" as const, target: "map" as const },
             { label: "Active quest", icon: "bolt" as const, target: "active" as const },
             { label: "Wallet", icon: "wallet" as const, target: "wallet" as const },
+            ...(isAdmin ? [{ label: "Admin review", icon: "book" as const, target: "admin" as const }] : []),
             { label: "FAQ", icon: "book" as const, target: null },
           ].map((item) => (
             <button
@@ -378,6 +402,7 @@ export default function App() {
       requests={requests}
       query={query}
       selectedRequestId={selectedRequestId}
+      currentKerb={userKerb}
       setSelectedRequestId={setSelectedRequestId}
       onAccept={async () => {
         const response = await fetch("/api/connect-request", {
@@ -389,6 +414,10 @@ export default function App() {
           window.alert(result?.msg ?? "Could not accept this quest.");
           return;
         }
+        setRequests(current => current.map(request => request.id === (selectedRequestId || selectedRequest?.id)
+          ? { ...request, status: "in_progress", helper: userKerb, acceptedAt: new Date().toISOString() }
+          : request));
+        setRequestsVersion(version => version + 1);
         setStage(1);
         navigate("active");
       }}
@@ -407,18 +436,13 @@ export default function App() {
     setStage={setStage}
     currentKerb={userKerb}
     onBack={() => navigate("map")}
-    onComplete={() => navigate("complete")}
+    onComplete={() => { setRequestsVersion(version => version + 1); }}
     onCancelled={() => { setRequestsVersion(version => version + 1); navigate("map"); }}
   />
 )}
 
-{page === "complete" && selectedRequest && (
-  <CompleteQuest
-    selectedRequest={selectedRequest}
-    onBack={() => navigate("map")}
-  />
-)}
       {page === "profile" && <ProfilePage refreshKey={requestsVersion} />}
+      {page === "admin" && isAdmin && <AdminPage />}
       {page === "users" && <UserLookupPage initialQuery={userSearchQuery} searchVersion={userSearchVersion} />}
       <ChatPopup request={selectedRequest} open={chatOpen} onClose={() => setChatOpen(false)} onUnreadChange={setChatUnread} />
       <button type="button" aria-label={chatOpen ? "Close chat" : "Open chat"} title="Messages" onClick={() => {

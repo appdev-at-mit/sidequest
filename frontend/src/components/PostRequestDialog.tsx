@@ -5,7 +5,6 @@ import AddressLookup, { type GeocodedAddress } from "./AddressLookup";
 import { addressPolicyError } from "../data/addressPolicy";
 
 type Props = { onClose: () => void; onPosted: () => void };
-type PostingLimits = { availableCents: number };
 const inputClass = "mt-1 block w-full rounded-lg border border-[#BED8D4] bg-white p-2.5";
 const timeOptions = Array.from({ length: 48 }, (_, index) => {
   const hour = Math.floor(index / 2);
@@ -20,7 +19,6 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [pickup, setPickup] = useState<GeocodedAddress | null>(null);
   const [dropoff, setDropoff] = useState<GeocodedAddress | null>(null);
-  const [limits, setLimits] = useState<PostingLimits | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [photoData, setPhotoData] = useState("");
@@ -33,29 +31,11 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
     return () => element?.close();
   }, []);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch("/api/posting-limits", { signal: controller.signal })
-      .then(response => {
-        if (!response.ok) throw new Error();
-        return response.json();
-      })
-      .then(setLimits)
-      .catch(() => {
-        if (!controller.signal.aborted) setError("Could not load your reward balance. Reopen this form to retry.");
-      });
-    return () => controller.abort();
-  }, []);
-
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || !limits) return;
+    if (busy) return;
     const fields = new FormData(event.currentTarget);
     const pay = Number(fields.get("pay"));
-    if (pay > limits.availableCents / 100) {
-      setError("This reward exceeds your available balance.");
-      return;
-    }
     const start = new Date(`${fields.get("startDate")}T${fields.get("startTime")}`);
     const end = new Date(`${fields.get("endDate")}T${fields.get("endTime")}`);
     if (!(end > start)) { setError("Choose a deadline after the start time."); return; }
@@ -123,7 +103,8 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
       <AddressLookup id="request-pickup" label="Pickup address" placeholder="Search where the task begins" onSelect={setPickup} />
       <p className="-mt-2 text-xs text-slate-500">Choose a publicly accessible address. Residence hall meetups should be at the lobby or front desk.</p>
       {error && <p role="alert" className="text-sm font-semibold text-red-700">{error}</p>}
-      <button type="submit" disabled={busy || !limits} className="rounded-lg bg-[#08679e] p-3 text-sm font-bold text-white disabled:opacity-60">{busy ? "Posting…" : "Post quest"}</button>
+      <p className="text-xs leading-5 text-slate-500">SideQuest records quest agreements and payment confirmations but does not process, guarantee, or insure external payments.</p>
+      <button type="submit" disabled={busy} className="rounded-lg bg-[#08679e] p-3 text-sm font-bold text-white disabled:opacity-60">{busy ? "Posting…" : "Post quest"}</button>
     </form>
   </dialog>;
 }

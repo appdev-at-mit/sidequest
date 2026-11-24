@@ -5,6 +5,7 @@ export type Request = {
   title: string;
   location: string;
   reward: string;
+  rewardCents?: number;
   distance: string;
   description: string;
   posted: string;
@@ -20,10 +21,29 @@ export type Request = {
   expired?: boolean;
   rating?: number | null;
   imageUrl?: string | null;
-  status?: number;
+  status?: "open" | "in_progress" | "pending_review" | "awaiting_payment" | "payment_sent" | "completed" | "disputed" | "cancelled";
   questStage?: number;
   helper?: string | null;
   requester?: string | null;
+  acceptedAt?: string | null;
+  agreementSnapshot?: {
+    title?: string;
+    description?: string;
+    category?: string;
+    rewardCents?: number;
+    pickup?: string;
+    dropoff?: string;
+    acceptedAt?: string;
+    paymentMethod?: string | null;
+    paymentInstructions?: string;
+  };
+  completionSubmission?: { description: string; evidence?: string; submittedAt: string };
+  requesterApprovedAt?: string | null;
+  paymentSentAt?: string | null;
+  paymentConfirmedAt?: string | null;
+  paymentPreferenceUpdatedAt?: string | null;
+  progressHistory?: { stage: string; at: string }[];
+  reviews?: { questId: string; role: string; ratings: Record<string, number>; text: string; createdAt: string }[];
 };
 
 export const mapRequests: Request[] = [

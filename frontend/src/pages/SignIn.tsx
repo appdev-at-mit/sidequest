@@ -79,7 +79,7 @@ export default function SignIn() {
       <section className="landing-content" aria-labelledby="landing-title">
         <h1 id="landing-title">Get paid to<br className="landing-mobile-break" /> side quest.</h1>
         <button className="landing-login" type="button" onClick={() => setShowLogin(true)}>
-          Touchstone login
+          SideQuest account
         </button>
       </section>
       {showLogin && <div className="landing-login-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !busy) setShowLogin(false); }}>
@@ -88,6 +88,7 @@ export default function SignIn() {
           <p className="landing-dialog-eyebrow">SIDEQUEST ACCOUNT</p>
           <h2 id="login-title">Welcome back</h2>
           <p className="landing-dialog-copy">Log in with your SideQuest username and password.</p>
+          <p className="text-xs leading-5 text-amber-800">Accounts are local to SideQuest. Entering a Kerberos username does not verify MIT or university affiliation.</p>
           <form onSubmit={passwordLogin} className="landing-login-form">
             <label>Username<input name="kerb" autoComplete="username" required maxLength={64} /></label>
             <label>Password<input name="password" type="password" autoComplete="current-password" required maxLength={256} /></label>

@@ -12,7 +12,7 @@ export default function RequestsPage({ requests, query, onViewOnMap }: Props) {
   const [sortBy, setSortBy] = useState<SortBy>("newest");
   const items = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    return requests.filter(request => !request.expired && (category === "All" || request.category === category)
+    return requests.filter(request => (request.status ?? "open") === "open" && !request.expired && (category === "All" || request.category === category)
       && (!normalized || `${request.title} ${request.description} ${request.location} ${request.category}`.toLowerCase().includes(normalized)))
       .sort((a, b) => {
         if (sortBy === "highest-reward" || sortBy === "lowest-reward") {
