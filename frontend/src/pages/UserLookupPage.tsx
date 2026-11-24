@@ -42,7 +42,7 @@ export default function UserLookupPage({ initialQuery, searchVersion, initialPro
     try {
       const response = await fetch(`/api/user-profiles/${encodeURIComponent(kerb)}`);
       const result = await response.json().catch(() => null);
-      if (!response.ok) throw new Error(result?.msg ?? "Could not open this profile.");
+      if (!response.ok) throw new Error(result?.msg ?? `Profile lookup failed (HTTP ${response.status}).`);
       setProfile(result);
     } catch (reason) { setProfileError(reason instanceof Error ? reason.message : "Could not open this profile."); }
     finally { setProfileLoading(false); }

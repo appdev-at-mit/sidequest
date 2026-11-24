@@ -390,6 +390,16 @@ export default function App() {
             <Icon name="bell" size={19} />
             {notifications.some(item => !item.readAt) && <span className="absolute right-2 top-2 h-2 w-2 rounded-full border-2 border-[#F7F9F9] bg-[#63D2FF]" />}
           </button>
+          <button type="button" aria-label={chatOpen ? "Close chat" : "Open chat"} title="Messages" onClick={() => {
+            setChatOpen(open => !open);
+            setChatUnread(false);
+            const unreadMessages = notifications.filter(item => item.type === "message" && !item.readAt);
+            unreadMessages.forEach(item => { void fetch(`/api/notifications/${item._id}/read`, { method: "PATCH" }); });
+            if (unreadMessages.length) setNotifications(current => current.map(item => item.type === "message" ? { ...item, readAt: new Date().toISOString() } : item));
+          }} className="relative grid h-10 w-10 shrink-0 place-items-center rounded-md text-slate-600 transition hover:bg-[#BED8D4]/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#102A3A]">
+            <Icon name={chatOpen ? "x" : "chat"} size={20} />
+            {chatUnread && <span aria-label="Unread messages" className="absolute right-1 top-1 h-3 w-3 rounded-full border-2 border-[#F7F9F9] bg-red-500" />}
+          </button>
           {(
             <button onClick={() => navigate("my-quests")} aria-label="My quests"
               className="flex shrink-0 items-center gap-1.5 rounded-lg bg-[#08679e] px-3 py-2 text-sm font-bold text-white hover:bg-[#075785]">
@@ -546,16 +556,7 @@ export default function App() {
       {page === "admin" && isAdmin && <AdminPage />}
 {page === "users" && <UserLookupPage initialQuery={userSearchQuery} searchVersion={userSearchVersion} initialProfileKerb={userProfileKerb} />}
       <ChatPopup request={selectedRequest} open={chatOpen} onClose={() => setChatOpen(false)} onUnreadChange={setChatUnread} />
-      <button type="button" aria-label={chatOpen ? "Close chat" : "Open chat"} title="Messages" onClick={() => {
-        setChatOpen(open => !open);
-        setChatUnread(false);
-        const unreadMessages = notifications.filter(item => item.type === "message" && !item.readAt);
-        unreadMessages.forEach(item => { void fetch(`/api/notifications/${item._id}/read`, { method: "PATCH" }); });
-        if (unreadMessages.length) setNotifications(current => current.map(item => item.type === "message" ? { ...item, readAt: new Date().toISOString() } : item));
-      }} className="fixed bottom-6 right-6 z-[750] grid h-14 w-14 place-items-center rounded-full border-2 border-white bg-[#2081C3] text-white shadow-lg transition hover:bg-[#176FA9] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#102A3A]">
-        <Icon name={chatOpen ? "x" : "chat"} size={24} />
-        {chatUnread && <span aria-label="Unread messages" className="absolute right-0 top-0 h-3.5 w-3.5 rounded-full border-2 border-white bg-red-500" />}
-      </button>
+
     </div>
   );
 }
