@@ -3,6 +3,7 @@ import DropoffPicker from "./components/DropoffPicker";
 import ExploreTasks from "./pages/ExploreTasks";
 import ActiveQuest from "./pages/ActiveQuest";
 import ProfilePage from "./pages/ProfilePage";
+import MyQuestsPage from "./pages/MyQuestsPage";
 import SignIn from "./pages/SignIn";
 import PostRequestDialog from "./components/PostRequestDialog";
 import AdminPage from "./pages/AdminPage";
@@ -18,10 +19,10 @@ import FeedbackDialog from "./components/FeedbackDialog";
 import type { Request } from "./data/requests";
 import { useAuth } from "./AuthContext";
 
-type Page = "map" | "requests" | "active" | "profile" | "admin" | "users" | "wallet";
+type Page = "map" | "requests" | "active" | "profile" | "my-quests" | "admin" | "users" | "wallet";
 type UserSuggestion = { kerb: string; name: string; rating: number | null };
 type Coordinates = { lat: number; lng: number } | null;
-const PAGE_NAMES = new Set<Page>(["map", "requests", "active", "profile", "admin", "users", "wallet"]);
+const PAGE_NAMES = new Set<Page>(["map", "requests", "active", "profile", "my-quests", "admin", "users", "wallet"]);
 
 function selectedDropoffCoordinates(): Coordinates {
   try {
@@ -34,8 +35,13 @@ function selectedDropoffCoordinates(): Coordinates {
 }
 
 function pageFromLocation(): Page {
+  if (/^\/quests\/[0-9a-fA-F]{24}\/?$/.test(window.location.pathname)) return "active";
   const requestedPage = new URLSearchParams(window.location.search).get("page");
   return requestedPage && PAGE_NAMES.has(requestedPage as Page) ? requestedPage as Page : "map";
+}
+
+function questIdFromLocation() {
+  return window.location.pathname.match(/^\/quests\/([0-9a-fA-F]{24})\/?$/)?.[1] ?? "";
 }
 
 export default function App() {
@@ -51,7 +57,10 @@ export default function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [requests, setRequests] = useState<Request[]>([]);
   const [requestsError, setRequestsError] = useState("");
-  const [selectedRequestId, setSelectedRequestId] = useState<string | number>("");
+  const [selectedRequestId, setSelectedRequestId] = useState<string | number>(questIdFromLocation);
+  const [routeRequest, setRouteRequest] = useState<Request | null>(null);
+  const [routeRequestLoading, setRouteRequestLoading] = useState(false);
+  const [questToEditId, setQuestToEditId] = useState("");
   const [query, setQuery] = useState("");
   const [userSearchQuery, setUserSearchQuery] = useState("");
   const [userSearchVersion, setUserSearchVersion] = useState(0);
@@ -62,12 +71,12 @@ export default function App() {
   const [chatOpen, setChatOpen] = useState(false);
   const [chatUnread, setChatUnread] = useState(false);
   const [notificationOpen, setNotificationOpen] = useState(false);
-  const [notifications, setNotifications] = useState<{ _id: string; type?: string; title: string; message: string; createdAt: string; readAt?: string | null }[]>([]);
+  const [notifications, setNotifications] = useState<{ _id: string; type?: string; title: string; message: string; createdAt: string; readAt?: string | null; requestId?: string }[]>([]);
   const menuRef = useRef<HTMLElement>(null);
   const userSearchRef = useRef<HTMLFormElement>(null);
-  const selectedRequest =
-  requests.find((request) => request.id === selectedRequestId)
-  ?? requests[0];
+  const selectedRequest = requests.find((request) => String(request.id) === String(selectedRequestId))
+    ?? (page === "active" ? routeRequest : null)
+    ?? (page === "active" ? undefined : requests[0]);
 
   useEffect(() => {
     if (!isLoggedIn) { setIsAdmin(false); return; }
@@ -81,10 +90,36 @@ export default function App() {
   }, [page, selectedRequest?.id]);
 
   useEffect(() => {
-    const restorePage = () => setPage(pageFromLocation());
+    const restorePage = () => { setPage(pageFromLocation()); setSelectedRequestId(questIdFromLocation()); };
     window.addEventListener("popstate", restorePage);
     return () => window.removeEventListener("popstate", restorePage);
   }, []);
+
+  useEffect(() => {
+    if (page !== "active" || !selectedRequestId || requests.some(request => String(request.id) === String(selectedRequestId))) { setRouteRequest(null); setRouteRequestLoading(false); return; }
+    const controller = new AbortController();
+    setRouteRequest(null);
+    setRouteRequestLoading(true);
+    fetch(`/api/quests/${encodeURIComponent(String(selectedRequestId))}`, { signal: controller.signal })
+      .then(async response => { const result = await response.json().catch(() => null); if (!response.ok) throw new Error(result?.msg ?? "Quest not found."); return result.data; })
+      .then(raw => {
+        if (controller.signal.aborted) return;
+        const cents = Number.isSafeInteger(raw.rewardCents) ? raw.rewardCents : Math.round(Number(raw.pay) * 100);
+        setRouteRequest({
+          id: raw._id, title: raw.title ?? raw.description, description: raw.description, category: raw.category ?? "Uncategorized",
+          reward: (cents / 100).toFixed(2), rewardCents: cents, location: raw.pickup || (raw.lat != null && raw.lng != null ? "Location shown on the map" : "Location not provided"),
+          distance: "", posted: raw.createdAt ? new Date(raw.createdAt).toLocaleString() : "Posting time unavailable", lat: raw.lat ?? null, lng: raw.lng ?? null,
+          poster: raw.requesterName ?? raw.requester ?? "Unknown user", start: raw.start ?? null, end: raw.end ?? null, pickup: raw.pickup ?? null, dropoff: raw.dropoff ?? null,
+          createdAt: raw.createdAt ?? null, expiresAt: raw.expiresAt ?? null, expired: Boolean(raw.expired), imageUrl: raw.imageUrl ?? null,
+          status: raw.status, questStage: raw.questStage, helper: raw.helper ?? null, requester: raw.requester ?? null, acceptedAt: raw.acceptedAt ?? null,
+          agreementSnapshot: raw.agreementSnapshot, completionSubmission: raw.completionSubmission, requesterApprovedAt: raw.requesterApprovedAt ?? null,
+          paymentSentAt: raw.paymentSentAt ?? null, paymentConfirmedAt: raw.paymentConfirmedAt ?? null, progressHistory: raw.progressHistory ?? raw.statusHistory ?? [],
+        });
+      })
+      .catch(() => { if (!controller.signal.aborted) setRouteRequest(null); })
+      .finally(() => { if (!controller.signal.aborted) setRouteRequestLoading(false); });
+    return () => controller.abort();
+  }, [page, selectedRequestId, requests]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -169,7 +204,8 @@ export default function App() {
         requesterApprovedAt?: string;
         paymentSentAt?: string;
         paymentConfirmedAt?: string;
-        progressHistory?: { stage: string; at: string }[];
+        progressHistory?: { stage?: string; to?: string; at: string }[];
+        statusHistory?: { from?: string | null; to: string; by?: string; at: string }[];
       };
 
       const legacyStatus: Record<number, Request["status"]> = { 0: "open", 1: "in_progress", 2: "pending_review", 3: "cancelled" };
@@ -208,7 +244,7 @@ export default function App() {
           requesterApprovedAt: request.requesterApprovedAt ?? null,
           paymentSentAt: request.paymentSentAt ?? null,
           paymentConfirmedAt: request.paymentConfirmedAt ?? null,
-          progressHistory: request.progressHistory ?? [],
+          progressHistory: request.progressHistory ?? request.statusHistory ?? [],
         })
       );
 
@@ -241,10 +277,53 @@ export default function App() {
   function navigate(next: Page) {
     setPage(next);
     const url = new URL(window.location.href);
+    if (url.pathname.startsWith("/quests/")) url.pathname = "/";
     if (next === "map") url.searchParams.delete("page");
     else url.searchParams.set("page", next);
     window.history.pushState({ page: next }, "", `${url.pathname}${url.search}${url.hash}`);
     setMenuOpen(false);
+  }
+
+  function navigateQuest(id: string | number) {
+    const previousURL = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    setSelectedRequestId(id);
+    setRouteRequest(null);
+    setPage("active");
+    window.history.pushState({ page: "active", previousURL }, "", `/quests/${encodeURIComponent(String(id))}`);
+    setMenuOpen(false);
+  }
+
+  async function acceptSelectedQuest() {
+    if (!selectedRequest || !window.confirm("Accept this quest?")) return;
+    try {
+      const response = await fetch("/api/connect-request", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ _id: String(selectedRequest.id) }),
+      });
+      const result = await response.json().catch(() => null);
+      if (!response.ok) { window.alert(result?.msg ?? "Could not accept this quest."); return; }
+      const acceptedAt = result?.data?.acceptedAt ?? new Date().toISOString();
+      setRequests(current => current.map(request => String(request.id) === String(selectedRequest.id)
+        ? { ...request, status: "in_progress", helper: userKerb, acceptedAt, agreementSnapshot: result?.data?.agreementSnapshot ?? request.agreementSnapshot }
+        : request));
+      setRouteRequest(current => current && String(current.id) === String(selectedRequest.id)
+        ? { ...current, status: "in_progress", helper: userKerb, acceptedAt, agreementSnapshot: result?.data?.agreementSnapshot ?? current.agreementSnapshot }
+        : current);
+      setRequestsVersion(version => version + 1);
+      setStage(1);
+    } catch { window.alert("Could not reach SideQuest. Try again."); }
+  }
+
+  async function deleteSelectedQuest() {
+    if (!selectedRequest || !window.confirm("Delete this open quest?")) return;
+    try {
+      const response = await fetch(`/api/requests/${encodeURIComponent(String(selectedRequest.id))}`, { method: "DELETE" });
+      const result = await response.json().catch(() => null);
+      if (!response.ok) { window.alert(result?.msg ?? "Could not delete this quest."); return; }
+      setRequests(current => current.filter(request => String(request.id) !== String(selectedRequest.id)));
+      setRequestsVersion(version => version + 1);
+      navigate("my-quests");
+    } catch { window.alert("Could not reach SideQuest. Try again."); }
   }
   if (checkingSession) {
     return <main className="sign-in"><div className="sign-in-brand"><Logo /></div><p className="sign-in-loading" role="status">Loading SideQuest…</p></main>;
@@ -310,7 +389,7 @@ export default function App() {
             {notifications.some(item => !item.readAt) && <span className="absolute right-2 top-2 h-2 w-2 rounded-full border-2 border-[#F7F9F9] bg-[#63D2FF]" />}
           </button>
           {(
-            <button onClick={() => navigate("profile")} aria-label="My quests"
+            <button onClick={() => navigate("my-quests")} aria-label="My quests"
               className="flex shrink-0 items-center gap-1.5 rounded-lg bg-[#08679e] px-3 py-2 text-sm font-bold text-white hover:bg-[#075785]">
               <span className="hidden min-[390px]:inline">My quests</span>
             </button>
@@ -325,6 +404,7 @@ export default function App() {
             void fetch(`/api/notifications/${item._id}/read`, { method: "PATCH" });
           }
           setNotificationOpen(false);
+          if (item.requestId) navigateQuest(item.requestId);
         }} className={`block w-full px-1 py-3 text-left ${item.readAt ? "opacity-70" : ""}`}><span className="flex items-start gap-2"><span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${item.readAt ? "bg-transparent" : "bg-[#2081C3]"}`} /><span><strong className="block text-sm">{item.title}</strong><span className="mt-0.5 block text-sm text-slate-600">{item.message}</span><time className="mt-1 block text-xs text-slate-400">{new Date(item.createdAt).toLocaleString()}</time></span></span></button>)}</div>}
       </section>}
       {dropoffOpen && <DropoffPicker onClose={() => { setDropoffOpen(false); setDropoffAddress(localStorage.getItem("sidequest-default-dropoff") || "Current location"); setDropoffCoordinates(selectedDropoffCoordinates()); }} onSelectAddress={address => { setDropoffAddress(address); setDropoffCoordinates(selectedDropoffCoordinates()); }} />}
@@ -437,23 +517,30 @@ export default function App() {
   </>
 )}
 
-{page === "requests" && <RequestsPage requests={requests} query={query} currentLocation={dropoffCoordinates} onViewOnMap={id => { setSelectedRequestId(id); navigate("map"); }} />}
+{page === "requests" && <RequestsPage requests={requests} query={query} currentLocation={dropoffCoordinates} onViewOnMap={navigateQuest} />}
 
 {page === "wallet" && <WalletPage />}
 
+{page === "active" && !selectedRequest && <main role={routeRequestLoading ? "status" : "alert"} className="mx-auto max-w-4xl px-5 py-16 text-center text-slate-600">{routeRequestLoading ? "Loading quest details…" : "Quest not found or no longer available."}</main>}
 {page === "active" && selectedRequest && (
   <ActiveQuest
     selectedRequest={selectedRequest}
     stage={stage}
     setStage={setStage}
     currentKerb={userKerb}
-    onBack={() => navigate("map")}
+    onBack={() => { if (window.history.state?.previousURL) window.history.back(); else navigate("map"); }}
+    onAccept={() => { void acceptSelectedQuest(); }}
+    onEdit={() => { setQuestToEditId(String(selectedRequest.id)); navigate("my-quests"); }}
+    onDelete={() => { void deleteSelectedQuest(); }}
+    onViewUser={kerb => { setUserSearchQuery(kerb); setUserSearchVersion(version => version + 1); navigate("users"); }}
+    onMessage={() => setChatOpen(true)}
     onComplete={() => { setRequestsVersion(version => version + 1); }}
     onCancelled={() => { setRequestsVersion(version => version + 1); navigate("map"); }}
   />
 )}
 
-      {page === "profile" && <ProfilePage refreshKey={requestsVersion} onPostQuest={() => setPostingRequest(true)} onRequestDeleted={() => setRequestsVersion(version => version + 1)} />}
+{page === "my-quests" && <MyQuestsPage refreshKey={requestsVersion} editQuestId={questToEditId} onEditOpened={() => setQuestToEditId("")} onPostQuest={() => setPostingRequest(true)} onChanged={() => setRequestsVersion(version => version + 1)} onViewQuest={navigateQuest} />}
+{page === "profile" && <ProfilePage refreshKey={requestsVersion} onPostQuest={() => setPostingRequest(true)} onRequestDeleted={() => setRequestsVersion(version => version + 1)} />}
       {page === "admin" && isAdmin && <AdminPage />}
       {page === "users" && <UserLookupPage initialQuery={userSearchQuery} searchVersion={userSearchVersion} />}
       <ChatPopup request={selectedRequest} open={chatOpen} onClose={() => setChatOpen(false)} onUnreadChange={setChatUnread} />

@@ -195,6 +195,29 @@ function summarizeQuestTitle(description) {
         res.status(201).json({ result: "success", msg: "Created quest", data: request });
     })
 
+    app.put("/api/requests/:id", async (req, res, next) => {
+        if (rateLimited(req, res, "edit-request", 30)) return;
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
+        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid request ID" });
+        const { description, category, pay, start, end } = req.body ?? {};
+        const rewardCents = typeof pay === "number" ? Math.round(pay * 100) : NaN;
+        if (!["Delivery", "Moving", "Home Help", "Tech", "Academic"].includes(category)) return res.status(400).json({ msg: "Choose a quest category." });
+        if (typeof description !== "string" || !description.trim() || description.trim().length > 150
+            || !Number.isFinite(pay) || !Number.isSafeInteger(rewardCents) || rewardCents <= 0 || rewardCents / 100 !== pay) {
+            return res.status(400).json({ msg: "Enter a description and a positive numeric reward amount." });
+        }
+        if (typeof start !== "string" || typeof end !== "string" || !(Date.parse(end) > Date.parse(start))) return res.status(400).json({ msg: "Choose a deadline after the start time." });
+        try {
+            const cleanDescription = sanitizeText(description, 150);
+            const request = await db.updateOpenRequest(req.params.id, req.user.kerb, {
+                description: cleanDescription, title: summarizeQuestTitle(cleanDescription), category,
+                rewardCents, pay, start, end,
+            });
+            if (!request) return res.status(409).json({ msg: "Only your open, unexpired quests can be edited." });
+            res.json({ result: "success", data: request });
+        } catch (error) { next(error); }
+    });
+
     app.post("/api/toggle-block", async (req, res) => {
         if (rateLimited(req, res, "toggle-block", 30)) return;
         if (!req.isAuthenticated()) {
@@ -291,6 +314,19 @@ function summarizeQuestTitle(description) {
             data: requests.map(request => ({ ...request, requesterName: names.get(request.requester) ?? request.requester }))
         })
     })
+
+    app.get("/api/quests/:id", async (req, res, next) => {
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
+        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID" });
+        try {
+            const quest = await db.getQuestForViewer(req.params.id, req.user.kerb);
+            if (!quest) return res.status(404).json({ msg: "Quest not found or no longer available." });
+            const kerbs = [quest.requester, quest.helper].filter(Boolean);
+            const users = await db.users.find({ kerb: { $in: kerbs } }, { projection: { kerb: 1, name: 1 } }).toArray();
+            const names = new Map(users.map(user => [user.kerb, user.name]));
+            res.json({ data: { ...quest, requesterName: names.get(quest.requester) ?? quest.requester, helperName: quest.helper ? names.get(quest.helper) ?? quest.helper : null } });
+        } catch (error) { next(error); }
+    });
 
      app.get("/api/profile", async (req, res) => {
         if (!req.isAuthenticated()) {
@@ -480,6 +516,12 @@ function summarizeQuestTitle(description) {
         } catch (error) {
             next(error);
         }
+    });
+
+    app.get("/api/my-quests", async (req, res, next) => {
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
+        try { res.json({ data: await db.getMyQuests(req.user.kerb) }); }
+        catch (error) { next(error); }
     });
 
     app.delete("/api/requests/:id", async (req, res, next) => {
@@ -687,6 +729,11 @@ function summarizeQuestTitle(description) {
             if (!report) return res.status(400).json({ msg: "You cannot report yourself or an unknown user." });
             res.status(201).json({ result: "success", msg: "Report submitted for review. A report alone does not result in an automatic penalty." });
         } catch (error) { next(error); }
+    });
+
+    app.get("/quests/:id", (req, res) => {
+        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(404).end();
+        res.sendFile(path.resolve("../frontend/index.html"));
     });
 
     app.get("/", async (req, res) => {

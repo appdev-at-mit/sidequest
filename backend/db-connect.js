@@ -124,6 +124,16 @@ class DBController {
         }));
     }
 
+    async updateOpenRequest(id, requester, changes) {
+        const quest = await this.requests.findOne({ _id: new ObjectId(id), requester, deletedAt: null });
+        if (!quest || normalizeQuestStatus(quest.status) !== "open" || requestExpiry(quest) <= Date.now()) return null;
+        const filter = { _id: quest._id, requester, deletedAt: null, status: quest.status };
+        if (quest.expiresAt) filter.expiresAt = { $gt: new Date() };
+        else if (quest.createdAt) filter.createdAt = { $gt: new Date(Date.now() - 86400000) };
+        const result = await this.requests.updateOne(filter, { $set: changes });
+        return result.matchedCount ? this.getRequestById(id) : null;
+    }
+
     async connectRequest(id, helper) {
         const requestId = new ObjectId(id);
         const candidate = await this.requests.findOne({ _id: requestId, deletedAt: null });
@@ -415,7 +425,22 @@ class DBController {
         return quests.map(quest => publicQuest(quest, kerb, true));
     }
 
+    async getMyQuests(kerb) {
+        const quests = await this.requests.find({ $or: [{ requester: kerb }, { helper: kerb }], deletedAt: null }).sort({ createdAt: -1 }).toArray();
+        return quests.map(quest => publicQuest(quest, kerb, true));
+    }
+
     async getRequestById(id) { return this.requests.findOne({ _id: new ObjectId(id), deletedAt: null }); }
+
+    async getQuestForViewer(id, viewer) {
+        const quest = await this.getRequestById(id);
+        if (!quest) return null;
+        const party = [quest.requester, quest.helper].includes(viewer);
+        const openAndAvailable = normalizeQuestStatus(quest.status) === "open" && requestExpiry(quest) > Date.now();
+        if (!party && !openAndAvailable) return null;
+        if (!party && quest.requester && await this.isBlockedEitherWay(viewer, quest.requester)) return null;
+        return publicQuest(quest, viewer, party);
+    }
 
     async deleteRequest(id, kerb) {
         const quest = await this.requests.findOne({ _id: new ObjectId(id), requester: kerb, deletedAt: null });

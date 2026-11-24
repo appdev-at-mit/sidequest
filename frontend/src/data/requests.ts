@@ -42,7 +42,8 @@ export type Request = {
   paymentSentAt?: string | null;
   paymentConfirmedAt?: string | null;
   paymentPreferenceUpdatedAt?: string | null;
-  progressHistory?: { stage: string; at: string }[];
+  progressHistory?: { stage?: string; to?: string; at: string }[];
+  statusHistory?: { from?: string | null; to: string; by?: string; at: string }[];
   reviews?: { questId: string; role: string; ratings: Record<string, number>; text: string; createdAt: string }[];
 };
 

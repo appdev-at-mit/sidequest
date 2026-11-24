@@ -6,6 +6,7 @@ import L from "leaflet";
 
 
 import Icon from "../components/Icon";
+import Avatar from "../components/Avatar";
 
 
 
@@ -34,10 +35,10 @@ const transportModes: { id: TransportMode; label: string; icon: "walk" | "car" |
 ];
 
 
-type Props = { selectedRequest: Request; stage: 1 | 2 | 3; setStage: (stage: 1 | 2 | 3) => void; currentKerb: string; onBack: () => void; onComplete: () => void; onCancelled: () => void };
+type Props = { selectedRequest: Request; stage: 1 | 2 | 3; setStage: (stage: 1 | 2 | 3) => void; currentKerb: string; onBack: () => void; onComplete: () => void; onCancelled: () => void; onAccept?: () => void; onEdit?: () => void; onDelete?: () => void; onViewUser?: (kerb: string) => void; onMessage?: () => void };
 
 
-export default function ActiveQuest({selectedRequest, stage, setStage, currentKerb, onBack, onComplete, onCancelled}: Props) {
+export default function ActiveQuest({selectedRequest, stage, setStage, currentKerb, onBack, onComplete, onCancelled, onAccept, onEdit, onDelete, onViewUser, onMessage}: Props) {
 
 
   const [mode, setMode] = useState<TransportMode>("foot");
@@ -46,6 +47,7 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
   const [routeDetails, setRouteDetails] = useState<{ minutes: number; miles: number } | null>(null);
 
   const [directionsCollapsed, setDirectionsCollapsed] = useState(false);
+  const [manageMenuOpen, setManageMenuOpen] = useState(false);
 
 
   const [routeError, setRouteError] = useState("");
@@ -58,6 +60,17 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
   const isRequester = selectedRequest.requester === currentKerb;
   const isHelper = selectedRequest.helper === currentKerb;
   const questStatus = selectedRequest.status ?? "open";
+  const otherKerb = isRequester ? selectedRequest.helper : selectedRequest.requester;
+  const [otherUser, setOtherUser] = useState<{ kerb: string; name: string; rating: number | null; reviewCount: number; completedQuests: number; identityVerificationStatus: string } | null>(null);
+
+  useEffect(() => {
+    if (!otherKerb) { setOtherUser(null); return; }
+    const controller = new AbortController();
+    fetch(`/api/user-profiles/${encodeURIComponent(otherKerb)}`, { signal: controller.signal })
+      .then(response => response.ok ? response.json() : null).then(data => { if (!controller.signal.aborted) setOtherUser(data); })
+      .catch(() => { if (!controller.signal.aborted) setOtherUser(null); });
+    return () => controller.abort();
+  }, [otherKerb]);
 
   useEffect(() => {
     if (questStatus !== "completed" || (!isRequester && !isHelper)) return;
@@ -623,6 +636,7 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
                   <div className="min-w-0">
                     <h1 className="text-xl font-extrabold">{selectedRequest.title}</h1>
                     <p className="mt-1 text-sm text-slate-500">Posted by {selectedRequest.poster}</p>
+                    <p className="mt-1 text-xs font-semibold capitalize text-slate-500">Quest #{String(selectedRequest.id)} · {selectedRequest.expired && questStatus === "open" ? "expired" : questStatus.replaceAll("_", " ")}</p>
                     <div className="mt-2 grid gap-x-5 gap-y-1 text-xs sm:grid-cols-2">
                       <p className="min-w-0 break-words"><span className="font-bold text-slate-600">Pickup:</span> {selectedRequest.pickup || selectedRequest.location || "Location shown on the map"}</p>
                       <p className="min-w-0 break-words"><span className="font-bold text-slate-600">Drop-off:</span> {selectedRequest.dropoff || "Not specified"}</p>
@@ -637,7 +651,9 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
 
 
                 {stageError && !actionBusy && <p role="alert" className="mr-2 text-sm text-red-700">{stageError}</p>}
-                {(isRequester || isHelper) && <button type="button" disabled={actionBusy !== null} onClick={() => { void cancelQuest(); }} className="inline-flex min-h-12 min-w-32 items-center justify-center gap-2 rounded-md border border-[#BED8D4] px-4 py-3 text-sm font-bold text-slate-600 hover:bg-[#E5F1F3] disabled:opacity-70">
+                {isRequester && questStatus === "open" && <div className="relative"><button type="button" aria-label="Quest management" aria-expanded={manageMenuOpen} onClick={() => setManageMenuOpen(open => !open)} className="grid h-10 w-10 place-items-center rounded-md border border-[#BED8D4] text-xl font-bold hover:bg-[#E5F1F3]">⋯</button>{manageMenuOpen && <div className="absolute right-0 top-11 z-20 min-w-40 rounded-lg border border-[#BED8D4] bg-white p-1 shadow-lg">{!selectedRequest.expired && <button type="button" onClick={() => { setManageMenuOpen(false); onEdit?.(); }} className="block w-full rounded px-3 py-2 text-left text-sm font-semibold hover:bg-[#EAF3F2]">Edit quest</button>}<button type="button" onClick={() => { setManageMenuOpen(false); onDelete?.(); }} className="block w-full rounded px-3 py-2 text-left text-sm font-semibold text-red-700 hover:bg-red-50">Delete quest</button></div>}</div>}
+                {!isRequester && !isHelper && questStatus === "open" && !selectedRequest.expired && <button type="button" onClick={() => onAccept?.()} className="inline-flex min-h-12 items-center justify-center rounded-md bg-[#2081C3] px-5 py-3 text-sm font-bold text-white hover:bg-[#176FA9]">Accept quest</button>}
+                {(isRequester || isHelper) && ["in_progress", "pending_review", "awaiting_payment"].includes(questStatus) && <button type="button" disabled={actionBusy !== null} onClick={() => { void cancelQuest(); }} className="inline-flex min-h-12 min-w-32 items-center justify-center gap-2 rounded-md border border-[#BED8D4] px-4 py-3 text-sm font-bold text-slate-600 hover:bg-[#E5F1F3] disabled:opacity-70">
                   {actionBusy === "cancel" ? <span role="status" aria-label="Cancelling" className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" /> : "Cancel quest"}
                 </button>}
 
@@ -660,9 +676,31 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
 
               </dl>
 
+              <section className="mt-5 grid gap-3 rounded-xl border border-[#BED8D4] bg-white p-4">
+                <div><h2 className="text-sm font-bold uppercase text-slate-500">Quest details</h2><p className="mt-2 whitespace-pre-wrap text-sm leading-6">{selectedRequest.description}</p></div>
+                <p className="text-sm"><span className="font-semibold">Category:</span> {selectedRequest.category}</p>
+                {selectedRequest.imageUrl && <figure><img src={selectedRequest.imageUrl} alt={`Photo attached to ${selectedRequest.title}`} className="max-h-72 rounded-lg object-contain" /><figcaption className="mt-1 text-xs text-slate-500">Quest attachment</figcaption></figure>}
+              </section>
+
+              {otherKerb && <section className="mt-5 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-[#BED8D4] bg-white p-4">
+                <div className="flex min-w-0 items-center gap-3"><Avatar initials={(otherUser?.name ?? otherKerb).slice(0, 1).toUpperCase()} /><div className="min-w-0"><p className="text-xs font-bold uppercase text-slate-500">{isRequester ? "Completer" : "Requester"}</p><p className="truncate font-bold">{otherUser?.name ?? otherKerb}</p><p className="text-xs text-slate-500">{otherUser?.rating == null ? "No ratings yet" : `★ ${otherUser.rating.toFixed(1)} · ${otherUser.reviewCount} reviews`} · ${otherUser?.completedQuests ?? 0} completed quests{otherUser?.identityVerificationStatus === "verified" ? " · University verified" : ""}</p></div></div>
+                <div className="flex gap-2">{onViewUser && <button type="button" onClick={() => onViewUser(otherKerb)} className="rounded-lg border border-[#BED8D4] px-3 py-2 text-sm font-semibold">View profile</button>}{(isRequester || isHelper) && onMessage && <button type="button" onClick={onMessage} className="rounded-lg border border-[#BED8D4] px-3 py-2 text-sm font-semibold">Message</button>}</div>
+              </section>}
+
               {(isRequester || isHelper) && <section className="mt-5 grid gap-4 border-t border-[#BED8D4] pt-5">
                 <h2 className="text-lg font-extrabold">Quest progress</h2>
                 <p className="text-sm font-semibold text-slate-700">Status: {questStatus.replaceAll("_", " ")}</p>
+                <ol aria-label="Quest progress timeline" className="grid gap-3 border-l-2 border-[#BED8D4] pl-4 text-sm">{[
+                  { label: "Quest posted", at: selectedRequest.createdAt },
+                  { label: "Quest accepted", at: selectedRequest.acceptedAt },
+                  { label: "Completion submitted", at: selectedRequest.completionSubmission?.submittedAt },
+                  { label: "Completion approved", at: selectedRequest.requesterApprovedAt },
+                  { label: "Reward sent", at: selectedRequest.paymentSentAt },
+                  { label: "Payment confirmed", at: selectedRequest.paymentConfirmedAt },
+                ].map(item => <li key={item.label} className="relative"><span className={`absolute -left-[1.35rem] top-1 h-3 w-3 rounded-full border-2 ${item.at ? "border-[#2081C3] bg-[#2081C3]" : "border-slate-300 bg-white"}`} /> <span className={item.at ? "font-semibold" : "text-slate-400"}>{item.label}</span>{item.at && <time className="ml-2 text-xs text-slate-500">{new Date(item.at).toLocaleString()}</time>}</li>)}</ol>
+                {questStatus === "pending_review" && <p className="rounded-lg bg-[#EAF3F2] p-3 text-sm">{isRequester ? "Review the submitted completion." : "Waiting for the requester to review your submission."}</p>}
+                {questStatus === "awaiting_payment" && <p className="rounded-lg bg-[#EAF3F2] p-3 text-sm">{isRequester ? `Send the agreed ${selectedRequest.reward} reward.` : `Waiting for your ${selectedRequest.reward} reward.`}</p>}
+                {questStatus === "payment_sent" && <p className="rounded-lg bg-[#EAF3F2] p-3 text-sm">{isRequester ? "Waiting for the completer to confirm receipt." : "Confirm that you received your reward."}</p>}
                 {questStatus === "in_progress" && isHelper && <form onSubmit={event => { event.preventDefault(); const values = new FormData(event.currentTarget); void workflowAction(`/api/requests/${selectedRequest.id}/completion`, { description: values.get("description"), evidence: values.get("evidence") }); }} className="grid gap-3 rounded-lg border border-[#BED8D4] bg-white p-4">
                   <label className="grid gap-1 text-sm font-semibold">Describe the completed work<textarea name="description" required maxLength={2000} className="min-h-20 rounded-md border border-[#BED8D4] p-3 font-normal" /></label>
                   <label className="grid gap-1 text-sm font-semibold">Evidence notes (optional)<textarea name="evidence" maxLength={4000} placeholder="Text only. Do not include sensitive information." className="min-h-16 rounded-md border border-[#BED8D4] p-3 font-normal" /></label>
