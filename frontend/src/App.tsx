@@ -63,6 +63,7 @@ export default function App() {
   const [questToEditId, setQuestToEditId] = useState("");
   const [query, setQuery] = useState("");
   const [userSearchQuery, setUserSearchQuery] = useState("");
+  const [userProfileKerb, setUserProfileKerb] = useState("");
   const [userSearchVersion, setUserSearchVersion] = useState(0);
   const [userSuggestions, setUserSuggestions] = useState<UserSuggestion[]>([]);
   const [userSuggestionsOpen, setUserSuggestionsOpen] = useState(false);
@@ -275,6 +276,7 @@ export default function App() {
   }, [isLoggedIn]);
 
   function navigate(next: Page) {
+    if (next !== "users") setUserProfileKerb("");
     setPage(next);
     const url = new URL(window.location.href);
     if (url.pathname.startsWith("/quests/")) url.pathname = "/";
@@ -353,7 +355,7 @@ export default function App() {
           <form
             ref={userSearchRef}
             className="relative flex h-10 min-w-0 flex-1 items-center gap-2 rounded-full border border-[#BED8D4] bg-white px-4 focus-within:border-[#2081C3]"
-            onSubmit={(event) => { event.preventDefault(); if (userSearchQuery.trim().length >= 2) { setUserSuggestionsOpen(false); setUserSearchVersion(version => version + 1); navigate("users"); } }}
+            onSubmit={(event) => { event.preventDefault(); if (userSearchQuery.trim().length >= 2) { setUserProfileKerb(""); setUserSuggestionsOpen(false); setUserSearchVersion(version => version + 1); navigate("users"); } }}
           >
             <Icon name="search" size={18} />
             <label htmlFor="user-search" className="sr-only">
@@ -373,8 +375,8 @@ export default function App() {
             {userSuggestionsOpen && userSearchQuery.trim().length >= 2 && <div id="user-search-suggestions" role="listbox" aria-label="Matching user profiles" className="absolute left-0 right-0 top-12 z-[100] overflow-hidden rounded-xl border border-[#BED8D4] bg-white py-1 shadow-xl">
               {userSuggestions.length ? userSuggestions.map(user => <button key={user.kerb} type="button" role="option" aria-selected="false" onClick={() => {
                 setUserSearchQuery(user.kerb);
+                setUserProfileKerb(user.kerb);
                 setUserSuggestionsOpen(false);
-                setUserSearchVersion(version => version + 1);
                 navigate("users");
               }} className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-[#EAF3F2]">
                 <Avatar initials={user.name.slice(0, 1).toUpperCase()} />
@@ -532,7 +534,7 @@ export default function App() {
     onAccept={() => { void acceptSelectedQuest(); }}
     onEdit={() => { setQuestToEditId(String(selectedRequest.id)); navigate("my-quests"); }}
     onDelete={() => { void deleteSelectedQuest(); }}
-    onViewUser={kerb => { setUserSearchQuery(kerb); setUserSearchVersion(version => version + 1); navigate("users"); }}
+    onViewUser={kerb => { setUserSearchQuery(kerb); setUserProfileKerb(kerb); navigate("users"); }}
     onMessage={() => setChatOpen(true)}
     onComplete={() => { setRequestsVersion(version => version + 1); }}
     onCancelled={() => { setRequestsVersion(version => version + 1); navigate("map"); }}
@@ -542,7 +544,7 @@ export default function App() {
 {page === "my-quests" && <MyQuestsPage refreshKey={requestsVersion} editQuestId={questToEditId} onEditOpened={() => setQuestToEditId("")} onPostQuest={() => setPostingRequest(true)} onChanged={() => setRequestsVersion(version => version + 1)} onViewQuest={navigateQuest} />}
 {page === "profile" && <ProfilePage refreshKey={requestsVersion} onPostQuest={() => setPostingRequest(true)} onRequestDeleted={() => setRequestsVersion(version => version + 1)} />}
       {page === "admin" && isAdmin && <AdminPage />}
-      {page === "users" && <UserLookupPage initialQuery={userSearchQuery} searchVersion={userSearchVersion} />}
+{page === "users" && <UserLookupPage initialQuery={userSearchQuery} searchVersion={userSearchVersion} initialProfileKerb={userProfileKerb} />}
       <ChatPopup request={selectedRequest} open={chatOpen} onClose={() => setChatOpen(false)} onUnreadChange={setChatUnread} />
       <button type="button" aria-label={chatOpen ? "Close chat" : "Open chat"} title="Messages" onClick={() => {
         setChatOpen(open => !open);

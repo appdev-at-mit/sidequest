@@ -529,6 +529,40 @@ class DBController {
         })).sort((a, b) => b.completedQuests - a.completedQuests || (b.rating ?? 0) - (a.rating ?? 0) || a.name.localeCompare(b.name));
     }
 
+    async getRecommendations(viewer) {
+        const [viewerRecord, rankedProfiles, quests] = await Promise.all([
+            this.users.findOne({ kerb: viewer }, { projection: { blocked: 1 } }),
+            this.getLeaderboard(viewer),
+            this.requests.find({ requester: viewer, helper: { $type: "string" }, deletedAt: null }).sort({ acceptedAt: -1 }).toArray(),
+        ]);
+        const blocked = new Set(viewerRecord?.blocked ?? []);
+        const allowed = async kerb => !blocked.has(kerb) && !await this.isBlockedEitherWay(viewer, kerb);
+        const pastStatuses = new Set(["completed", "cancelled"]);
+        const pastAcceptors = [];
+        const seen = new Set();
+        for (const quest of quests) {
+            const kerb = quest.helper;
+            if (!pastStatuses.has(normalizeQuestStatus(quest.status)) || seen.has(kerb) || !await allowed(kerb)) continue;
+            seen.add(kerb);
+            const profile = await this.getUserMetrics(kerb);
+            if (profile) pastAcceptors.push({
+                kerb, name: profile.name, rating: profile.rating, reviewCount: profile.reviewCount,
+                completedQuests: profile.completedQuests, identityVerificationStatus: profile.identityVerificationStatus,
+                lastAcceptedAt: quest.acceptedAt ?? quest.createdAt ?? null,
+                lastQuestTitle: quest.title ?? quest.description,
+            });
+        }
+        const pastKerbs = new Set(pastAcceptors.map(user => user.kerb));
+        const recommendations = [];
+        const candidates = rankedProfiles.slice().sort((a, b) => (b.rating ?? -1) - (a.rating ?? -1) || b.completedQuests - a.completedQuests || b.reviewCount - a.reviewCount);
+        for (const profile of candidates) {
+            if (recommendations.length >= 8) break;
+            if (pastKerbs.has(profile.kerb) || !await allowed(profile.kerb)) continue;
+            recommendations.push({ ...profile, identityVerificationStatus: profile.identityVerificationStatus ?? "unverified" });
+        }
+        return { recommendations, pastAcceptors };
+    }
+
     static get REVIEW_FIELDS() { return REVIEW_FIELDS; }
     static get PAYMENT_METHODS() { return PAYMENT_METHODS; }
     static get DISPUTE_REASONS() { return DISPUTE_REASONS; }

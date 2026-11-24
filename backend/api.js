@@ -349,11 +349,21 @@ function summarizeQuestTitle(description) {
         if (!/^[a-zA-Z0-9_-]{1,64}$/.test(req.params.kerb)) return res.status(400).json({ msg: "Invalid username." });
         try {
             if (await db.isBlockedEitherWay(req.user.kerb, req.params.kerb)) return res.status(404).json({ msg: "Profile not found." });
-            const profile = await db.getUserMetrics(req.params.kerb, req.params.kerb === req.user.kerb);
+            const [profile, leaderboard] = await Promise.all([
+                db.getUserMetrics(req.params.kerb, req.params.kerb === req.user.kerb),
+                db.getLeaderboard(null),
+            ]);
             if (!profile) return res.status(404).json({ msg: "Profile not found." });
             const { kerb, name, createdAt, identityVerificationStatus, postedQuests, completedQuests, confirmedPayments, paymentConfirmationRate, totalConfirmedEarningsCents, rating, reviewCount, reviews, preferredPaymentMethod, paymentInstructions, moderationStatus, strikes } = profile;
-            res.json({ kerb, name, createdAt, identityVerificationStatus, postedQuests, completedQuests, confirmedPayments, paymentConfirmationRate, totalConfirmedEarningsCents, rating, reviewCount, ...(req.params.kerb === req.user.kerb ? { preferredPaymentMethod, paymentInstructions, moderationStatus, strikes, reviews } : { reviews: await db.publicReviews(req.params.kerb) }) });
+            res.json({ kerb, name, createdAt, rank: leaderboard.findIndex(user => user.kerb === kerb) + 1, identityVerificationStatus, postedQuests, completedQuests, confirmedPayments, paymentConfirmationRate, totalConfirmedEarningsCents, rating, reviewCount, ...(req.params.kerb === req.user.kerb ? { preferredPaymentMethod, paymentInstructions, moderationStatus, strikes, reviews } : { reviews: await db.publicReviews(req.params.kerb) }) });
         } catch (error) { next(error); }
+    });
+
+    app.get("/api/recommendations", async (req, res, next) => {
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
+        if (rateLimited(req, res, "recommendations", 30)) return;
+        try { res.json({ data: await db.getRecommendations(req.user.kerb) }); }
+        catch (error) { next(error); }
     });
 
     app.post("/api/payment-preference", async (req, res) => {
