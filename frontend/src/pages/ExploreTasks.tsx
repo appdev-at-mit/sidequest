@@ -74,6 +74,14 @@ export default function ExploreTasks({
     };
   }, []);
 
+  useEffect(() => {
+    if (!selectedRequest || clusterRequests) return;
+    setRequestOpen(true);
+    if (typeof selectedRequest.lat === "number" && typeof selectedRequest.lng === "number") {
+      leafletMap.current?.setView([selectedRequest.lat, selectedRequest.lng], Math.max(leafletMap.current.getZoom(), 17), { animate: true });
+    }
+  }, [selectedRequestId, clusterRequests]);
+
   // Refresh markers when the requests or selection change.
   useEffect(() => {
     const map = leafletMap.current;
@@ -192,12 +200,14 @@ export default function ExploreTasks({
             <div><p className="text-xs font-bold uppercase tracking-wide text-[#2081C3]">Map cluster</p><h2 className="mt-1 text-xl font-extrabold">{clusterRequests.length} requests nearby</h2></div>
             <button onClick={() => { setRequestOpen(false); setClusterRequests(null); }} aria-label="Close clustered requests" className="rounded-md p-2 hover:bg-[#BED8D4]/40"><Icon name="x" size={18} /></button>
           </div>
-          <div className="flex-1 divide-y divide-[#BED8D4] overflow-y-auto px-5">
-            {clusterRequests.map(request => <button key={request.id} onClick={() => { setSelectedRequestId(request.id); setClusterRequests(null); }} className="w-full py-4 text-left hover:bg-white">
-              <div className="flex items-start justify-between gap-3"><h3 className="font-extrabold">{request.title}</h3><span className="shrink-0 font-extrabold text-[#2081C3]">{request.reward}</span></div>
-              <p className="mt-1 text-[10px] text-slate-500">Posted by {request.poster}</p>
-              <p className="mt-2 line-clamp-2 text-sm text-slate-600">{request.description.slice(0, 150)}</p>
-            </button>)}
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+            <div className="flex flex-col gap-3">
+              {clusterRequests.map(request => <button key={request.id} onClick={() => { setSelectedRequestId(request.id); setClusterRequests(null); if (typeof request.lat === "number" && typeof request.lng === "number") leafletMap.current?.setView([request.lat, request.lng], Math.max(leafletMap.current.getZoom(), 17), { animate: true }); }} className="w-full rounded-xl border border-[#BED8D4] bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-[#2081C3] hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#2081C3]">
+                <div className="flex items-start justify-between gap-3"><h3 className="font-extrabold">{request.title}</h3><span className="shrink-0 font-extrabold text-[#2081C3]">{request.reward}</span></div>
+                <p className="mt-1 text-xs text-slate-500">Posted by {request.poster}</p>
+                <p className="mt-2 line-clamp-2 text-sm text-slate-600">{request.description.slice(0, 150)}</p>
+              </button>)}
+            </div>
           </div>
         </aside>
       )}

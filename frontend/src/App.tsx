@@ -20,7 +20,18 @@ import { useAuth } from "./AuthContext";
 
 type Page = "map" | "requests" | "active" | "profile" | "admin" | "users" | "wallet";
 type UserSuggestion = { kerb: string; name: string; rating: number | null };
+type Coordinates = { lat: number; lng: number } | null;
 const PAGE_NAMES = new Set<Page>(["map", "requests", "active", "profile", "admin", "users", "wallet"]);
+
+function selectedDropoffCoordinates(): Coordinates {
+  try {
+    const addresses: unknown = JSON.parse(localStorage.getItem("sidequest-saved-dropoffs") ?? "[]");
+    const selectedId = localStorage.getItem("sidequest-selected-dropoff");
+    if (!Array.isArray(addresses) || !selectedId) return null;
+    const address = addresses.find(item => item?.id === selectedId && Number.isFinite(item?.lat) && Number.isFinite(item?.lng));
+    return address ? { lat: address.lat, lng: address.lng } : null;
+  } catch { return null; }
+}
 
 function pageFromLocation(): Page {
   const requestedPage = new URLSearchParams(window.location.search).get("page");
@@ -33,6 +44,7 @@ export default function App() {
   const { isLoggedIn, checkingSession, setIsLoggedIn, setUserName, userName, userKerb, setUserKerb } = useAuth();
   const [dropoffOpen, setDropoffOpen] = useState(false);
   const [dropoffAddress, setDropoffAddress] = useState(() => localStorage.getItem("sidequest-default-dropoff") || "Current location");
+  const [dropoffCoordinates, setDropoffCoordinates] = useState<Coordinates>(selectedDropoffCoordinates);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [postingRequest, setPostingRequest] = useState(false);
   const [requestsVersion, setRequestsVersion] = useState(0);
@@ -316,7 +328,7 @@ export default function App() {
           setNotificationOpen(false);
         }} className={`block w-full px-1 py-3 text-left ${item.readAt ? "opacity-70" : ""}`}><span className="flex items-start gap-2"><span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${item.readAt ? "bg-transparent" : "bg-[#2081C3]"}`} /><span><strong className="block text-sm">{item.title}</strong><span className="mt-0.5 block text-sm text-slate-600">{item.message}</span><time className="mt-1 block text-xs text-slate-400">{new Date(item.createdAt).toLocaleString()}</time></span></span></button>)}</div>}
       </section>}
-      {dropoffOpen && <DropoffPicker onClose={() => { setDropoffOpen(false); setDropoffAddress(localStorage.getItem("sidequest-default-dropoff") || "Current location"); }} onSelectAddress={setDropoffAddress} />}
+      {dropoffOpen && <DropoffPicker onClose={() => { setDropoffOpen(false); setDropoffAddress(localStorage.getItem("sidequest-default-dropoff") || "Current location"); setDropoffCoordinates(selectedDropoffCoordinates()); }} onSelectAddress={address => { setDropoffAddress(address); setDropoffCoordinates(selectedDropoffCoordinates()); }} />}
       {feedbackOpen && <FeedbackDialog onClose={() => setFeedbackOpen(false)} />}
       <button
         onClick={() => setMenuOpen(false)}
@@ -346,7 +358,6 @@ export default function App() {
             { label: "Active quest", icon: "bolt" as const, target: "active" as const },
             { label: "Wallet", icon: "wallet" as const, target: "wallet" as const },
             ...(isAdmin ? [{ label: "Admin review", icon: "book" as const, target: "admin" as const }] : []),
-            { label: "FAQ", icon: "book" as const, target: null },
           ].map((item) => (
             <button
               key={item.label}
@@ -365,7 +376,7 @@ export default function App() {
             >
               <Icon name={item.icon} size={19} />
               {item.label}
-              {item.label !== "FAQ" && <span className="ml-auto"><Icon name="chevron" size={16} /></span>}
+              <span className="ml-auto"><Icon name="chevron" size={16} /></span>
             </button>
           ))}
           <div className="mt-auto">
@@ -379,8 +390,10 @@ export default function App() {
             }} className="mt-1 w-full rounded-md px-3 py-3 text-left text-sm font-semibold text-slate-500 hover:bg-[#BED8D4]/25">
               Sign out
             </button>
-            <div className="flex items-center gap-2 border-t border-[#BED8D4] pt-2">
+            <div className="flex flex-wrap items-center gap-1 border-t border-[#BED8D4] pt-2">
               <button onClick={() => { setMenuOpen(false); window.alert("Help and support is coming soon."); }} className="rounded-md px-3 py-3 text-sm font-semibold text-slate-500 hover:bg-[#BED8D4]/25">Help</button>
+              <span aria-hidden="true" className="text-slate-400">·</span>
+              <button onClick={() => { setMenuOpen(false); window.alert("FAQ and support are coming soon."); }} className="rounded-md px-3 py-3 text-sm font-semibold text-slate-500 hover:bg-[#BED8D4]/25">FAQ</button>
               <span aria-hidden="true" className="text-slate-400">·</span>
               <button onClick={() => { setMenuOpen(false); setFeedbackOpen(true); }} className="rounded-md px-3 py-3 text-sm font-semibold text-slate-500 hover:bg-[#BED8D4]/25">Feedback</button>
             </div>
@@ -425,7 +438,7 @@ export default function App() {
   </>
 )}
 
-{page === "requests" && <RequestsPage requests={requests} query={query} onViewOnMap={id => { setSelectedRequestId(id); navigate("map"); }} />}
+{page === "requests" && <RequestsPage requests={requests} query={query} currentLocation={dropoffCoordinates} onViewOnMap={id => { setSelectedRequestId(id); navigate("map"); }} />}
 
 {page === "wallet" && <WalletPage />}
 

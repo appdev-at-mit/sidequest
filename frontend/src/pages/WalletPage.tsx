@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 
-type WalletProfile = { preferredPaymentMethod?: string; paymentInstructions?: string };
+type WalletProfile = { preferredPaymentMethod?: string; paymentInstructions?: string; totalConfirmedEarningsCents?: number };
 const METHODS = ["Cash", "PayPal", "Venmo", "Cash App", "Zelle", "Other"];
 
 export default function WalletPage() {
   const [method, setMethod] = useState("Cash");
   const [instructions, setInstructions] = useState("");
+  const [totalConfirmedEarningsCents, setTotalConfirmedEarningsCents] = useState(0);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -15,6 +16,7 @@ export default function WalletPage() {
       if (!data) return;
       if (data.preferredPaymentMethod && METHODS.includes(data.preferredPaymentMethod)) setMethod(data.preferredPaymentMethod);
       setInstructions(data.paymentInstructions ?? "");
+      setTotalConfirmedEarningsCents(Number.isSafeInteger(data.totalConfirmedEarningsCents) ? data.totalConfirmedEarningsCents! : 0);
     }).catch(() => {});
   }, []);
 
@@ -34,8 +36,10 @@ export default function WalletPage() {
 
   return <main className="min-h-[calc(100dvh-64px)] bg-[#F7F9F9] px-5 py-8 sm:px-8">
     <section className="mx-auto max-w-4xl">
-      <h1 className="text-3xl font-extrabold">Reward payment preference</h1>
-      <div className="mt-5 max-w-2xl rounded-xl border border-[#BED8D4] bg-white p-5">
+      <div className="rounded-2xl bg-[#102A3A] p-7 text-white shadow-sm sm:p-9">
+        <div className="mt-5 border-t border-white/20 pt-4"><p className="text-sm font-semibold text-white/75">Total reward earned</p><p className="mt-1 text-4xl font-extrabold">${(totalConfirmedEarningsCents / 100).toFixed(2)}</p></div>
+      </div>
+      <div className="mt-6 max-w-2xl rounded-xl border border-[#BED8D4] bg-white p-5">
         <label className="block text-sm font-semibold">Preferred external payment method
           <select value={method} onChange={event => setMethod(event.target.value)} className="mt-2 w-full rounded-lg border border-[#BED8D4] bg-white p-3">
             {METHODS.map(item => <option key={item}>{item}</option>)}
