@@ -74,6 +74,7 @@ export default function MyQuestsPage({ refreshKey, editQuestId, onEditOpened, on
     if (terminal) return false;
     return tab === "posted" ? quest.requester === userKerb : quest.helper === userKerb;
   }), [quests, tab, userKerb]);
+  const showFirstPostPrompt = !loading && !error && tab === "posted" && visibleQuests.length === 0;
 
   async function removeQuest(quest: Quest) {
     if (!window.confirm("Delete this open quest?")) return;
@@ -109,13 +110,13 @@ export default function MyQuestsPage({ refreshKey, editQuestId, onEditOpened, on
 
   return <main className="min-h-[calc(100dvh-64px)] bg-[#F7F9F9] px-5 py-8 sm:px-8">
     <section className="mx-auto max-w-5xl">
-      <header className="mb-6"><h1 className="text-3xl font-extrabold tracking-tight">My quests</h1><p className="mt-2 text-slate-600">Manage and keep track of your quests.</p></header>
+      <header className="mb-6"><h1 className="text-3xl font-extrabold tracking-tight">My quests</h1></header>
       <nav aria-label="Quest sections" className="grid grid-cols-3 border-b border-[#BED8D4]">
         {tabs.map(item => <button key={item.id} type="button" aria-current={tab === item.id ? "page" : undefined} onClick={() => { setTab(item.id); setActionError(""); }} className={`border-b-2 px-2 py-4 text-sm font-bold transition sm:text-base ${tab === item.id ? "border-[#2081C3] text-[#08679e]" : "border-transparent text-slate-500 hover:text-[#102A3A]"}`}>{item.label}</button>)}
       </nav>
-      <div className="flex flex-wrap items-center justify-between gap-3 py-5"><p className="text-sm text-slate-600">{tab === "posted" ? "Quests you posted" : tab === "accepted" ? "Quests you accepted" : "Completed, cancelled, or expired quests"}</p>{tab === "posted" && <button type="button" onClick={onPostQuest} className="rounded-lg bg-[#08679e] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#075785]">+ Post a quest</button>}</div>
+      {!showFirstPostPrompt && <div className="flex flex-wrap items-center justify-between gap-3 py-5"><p className="text-sm text-slate-600">{tab === "posted" ? "Quests you posted" : tab === "accepted" ? "Quests you accepted" : "Completed, cancelled, or expired quests"}</p>{tab === "posted" && <button type="button" onClick={onPostQuest} className="rounded-lg bg-[#08679e] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#075785]">+ Post a quest</button>}</div>}
       {actionError && <p role="alert" className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{actionError}</p>}
-      {loading ? <p role="status" className="py-8 text-center text-sm text-slate-500">Loading your quests…</p> : error ? <p role="alert" className="rounded-xl border border-red-200 bg-white p-5 text-sm text-red-700">{error}</p> : visibleQuests.length === 0 ? <div className="rounded-xl border border-[#BED8D4] bg-white p-8 text-center"><p className="font-semibold">{tab === "posted" ? "No current posted quests" : tab === "accepted" ? "No accepted quests" : "No past quests"}</p>{tab === "posted" && <button type="button" onClick={onPostQuest} className="mt-4 rounded-lg bg-[#08679e] px-4 py-2.5 text-sm font-bold text-white">Post a quest</button>}</div> : <div className="grid gap-3">{visibleQuests.map(quest => {
+      {loading ? <p role="status" className="py-8 text-center text-sm text-slate-500">Loading your quests…</p> : error ? <p role="alert" className="rounded-xl border border-red-200 bg-white p-5 text-sm text-red-700">{error}</p> : visibleQuests.length === 0 ? <div className="rounded-xl border border-[#BED8D4] bg-white p-8 text-center"><p className="font-semibold">{tab === "posted" ? "You haven’t posted a quest yet." : tab === "accepted" ? "No accepted quests" : "No past quests"}</p>{tab === "posted" && <button type="button" onClick={onPostQuest} className="mt-4 rounded-lg bg-[#08679e] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#075785]">Post a quest</button>}</div> : <div className="grid gap-3">{visibleQuests.map(quest => {
         const isOwnPost = quest.requester === userKerb;
         const isOpen = (quest.status ?? "open") === "open" && !quest.expired;
         return <article key={quest._id} role="link" tabIndex={0} onClick={() => onViewQuest(quest._id)} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onViewQuest(quest._id); } }} className="cursor-pointer rounded-xl border border-[#BED8D4] bg-white p-4 shadow-sm transition hover:border-[#2081C3] hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#2081C3] sm:p-5">

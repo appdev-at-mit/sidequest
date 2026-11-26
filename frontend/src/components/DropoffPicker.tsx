@@ -96,6 +96,20 @@ export default function DropoffPicker({ onClose, onSelectAddress }: Props) {
     setError("");
   }
 
+  function removeDetail() {
+    if (!detail) return;
+    const next = addresses.filter(address => address.id !== detail.id);
+    if (next.length !== addresses.length) persist(next);
+    if (selectedId === detail.id) {
+      setSelectedId("");
+      localStorage.removeItem("sidequest-selected-dropoff");
+      localStorage.removeItem("sidequest-default-dropoff");
+      onSelectAddress("Current location");
+    }
+    setDetail(null);
+    setError("");
+  }
+
   async function findAddress(text = query) {
     const value = text.trim();
     if (!value || busy) return;
@@ -184,7 +198,7 @@ export default function DropoffPicker({ onClose, onSelectAddress }: Props) {
 
       <footer className="border-t border-[#BED8D4] bg-white p-5">
         <div className="flex gap-2">
-          {detail && <button onClick={() => { setDetail(null); setError(""); }} className="flex-1 rounded-[5px] border border-[#BED8D4] p-3 font-bold">Back</button>}
+          {detail && <button onClick={removeDetail} className="flex-1 rounded-[5px] border border-red-200 p-3 font-bold text-red-700 hover:bg-red-50">Remove</button>}
           {detail ? <button onClick={saveDetail} className="flex-1 rounded-[5px] bg-[#08679e] p-3 font-bold text-white">Save</button> : <button onClick={onClose} className="w-full rounded-[5px] bg-[#08679e] p-3 font-bold text-white">Done</button>}
         </div>
       </footer>

@@ -454,7 +454,7 @@ export default function App() {
           {[
             { label: "Quests", icon: "location" as const, target: "requests" as const },
             { label: "Map", icon: "location" as const, target: "map" as const },
-            { label: "Active quest", icon: "bolt" as const, target: "active" as const },
+            { label: "My quests", icon: "bolt" as const, target: "my-quests" as const },
             { label: "Wallet", icon: "wallet" as const, target: "wallet" as const },
             ...(isAdmin ? [{ label: "Admin review", icon: "book" as const, target: "admin" as const }] : []),
           ].map((item) => (
