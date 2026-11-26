@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import DropoffPicker from "./components/DropoffPicker";
+import DropoffPicker, { type SavedAddress } from "./components/DropoffPicker";
 import ExploreTasks from "./pages/ExploreTasks";
 import ActiveQuest from "./pages/ActiveQuest";
 import ProfilePage from "./pages/ProfilePage";
@@ -112,7 +112,7 @@ export default function App() {
           id: raw._id, title: raw.title ?? raw.description, description: raw.description, category: raw.category ?? "Uncategorized",
           reward: (cents / 100).toFixed(2), rewardCents: cents, location: raw.pickup || (raw.lat != null && raw.lng != null ? "Location shown on the map" : "Location not provided"),
           distance: "", posted: raw.createdAt ? new Date(raw.createdAt).toLocaleString() : "Posting time unavailable", lat: raw.lat ?? null, lng: raw.lng ?? null,
-          poster: raw.requesterName ?? raw.requester ?? "Unknown user", start: raw.start ?? null, end: raw.end ?? null, pickup: raw.pickup ?? null, dropoff: raw.dropoff ?? null,
+          poster: raw.requesterName ?? raw.requester ?? "Unknown user", start: raw.start ?? null, end: raw.end ?? null, pickup: raw.pickup ?? null, dropoff: raw.dropoff ?? null, pickupLocation: raw.pickupLocation ?? null, dropoffLocation: raw.dropoffLocation ?? null,
           createdAt: raw.createdAt ?? null, expiresAt: raw.expiresAt ?? null, expired: Boolean(raw.expired), imageUrl: raw.imageUrl ?? null,
           status: raw.status, questStage: raw.questStage, helper: raw.helper ?? null, requester: raw.requester ?? null, acceptedAt: raw.acceptedAt ?? null,
           agreementSnapshot: raw.agreementSnapshot, completionSubmission: raw.completionSubmission, requesterApprovedAt: raw.requesterApprovedAt ?? null,
@@ -195,6 +195,8 @@ export default function App() {
         end?: string;
         pickup?: string;
         dropoff?: string;
+        pickupLocation?: Request["pickupLocation"];
+        dropoffLocation?: Request["dropoffLocation"];
         createdAt?: string;
         expiresAt?: string;
         expired?: boolean;
@@ -236,6 +238,8 @@ export default function App() {
           end: request.end ?? null,
           pickup: request.pickup ?? null,
           dropoff: request.dropoff ?? null,
+          pickupLocation: request.pickupLocation ?? null,
+          dropoffLocation: request.dropoffLocation ?? null,
           createdAt: request.createdAt ?? null,
           expiresAt: request.expiresAt ?? (request.createdAt ? new Date(new Date(request.createdAt).getTime() + 24 * 60 * 60 * 1000).toISOString() : null),
           expired: request.expired ?? false,
@@ -392,12 +396,14 @@ export default function App() {
             </div>}
           </form>
 
-          <button onClick={() => setNotificationOpen(open => !open)} className="relative grid h-10 w-10 shrink-0 place-items-center rounded-md text-slate-600 transition hover:bg-[#BED8D4]/30" aria-label="Notifications" aria-expanded={notificationOpen}>
+          <button onClick={() => { const nextOpen = !notificationOpen; setNotificationOpen(nextOpen); if (nextOpen) setChatOpen(false); }} className="relative grid h-10 w-10 shrink-0 place-items-center rounded-md text-slate-600 transition hover:bg-[#BED8D4]/30" aria-label="Notifications" aria-expanded={notificationOpen}>
             <Icon name="bell" size={19} />
             {notifications.some(item => !item.readAt) && <span className="absolute right-2 top-2 h-2 w-2 rounded-full border-2 border-[#F7F9F9] bg-[#63D2FF]" />}
           </button>
           <button type="button" aria-label={chatOpen ? "Close chat" : "Open chat"} title="Messages" onClick={() => {
-            setChatOpen(open => !open);
+            const nextOpen = !chatOpen;
+            setChatOpen(nextOpen);
+            if (nextOpen) setNotificationOpen(false);
             setChatRequestId("");
             setChatUnread(false);
             const unreadMessages = notifications.filter(item => item.type === "message" && !item.readAt);
@@ -427,7 +433,7 @@ export default function App() {
         }} className={`block w-full px-1 py-5 text-left ${item.readAt ? "opacity-70" : ""}`}><span className="flex items-start gap-4"><span className="mt-1 text-[#496A9A]"><Icon name={item.type === "payment" ? "wallet" : item.type === "message" ? "chat" : "check"} size={23} /></span><span className="min-w-0 flex-1"><strong className="block text-base">{item.title}</strong><span className="mt-1 block text-sm text-slate-600">{item.message}</span><time className="mt-1 block text-sm text-slate-500">{new Date(item.createdAt).toLocaleString()}</time></span><span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${item.readAt ? "bg-transparent" : "bg-[#496A9A]"}`} /></span></button>)}</div>}
         {notifications.length > 3 && <button type="button" onClick={() => setShowAllNotifications(value => !value)} className="w-full pt-4 text-center font-bold text-[#496A9A]">{showAllNotifications ? "Show fewer notifications" : "View all notifications"}</button>}
       </section>}
-      {dropoffOpen && <DropoffPicker onClose={() => { setDropoffOpen(false); setDropoffAddress(localStorage.getItem("sidequest-default-dropoff") || "Current location"); setDropoffCoordinates(selectedDropoffCoordinates()); }} onSelectAddress={address => { setDropoffAddress(address); setDropoffCoordinates(selectedDropoffCoordinates()); }} />}
+      {dropoffOpen && <DropoffPicker onClose={() => { setDropoffOpen(false); setDropoffAddress(localStorage.getItem("sidequest-default-dropoff") || "Current location"); setDropoffCoordinates(selectedDropoffCoordinates()); }} onSelectAddress={(address: SavedAddress | null) => { setDropoffAddress(address?.address ?? "Current location"); setDropoffCoordinates(address && Number.isFinite(address.lat) && Number.isFinite(address.lng) ? { lat: address.lat!, lng: address.lng! } : null); }} />}
       {feedbackOpen && <FeedbackDialog onClose={() => setFeedbackOpen(false)} />}
       <button
         onClick={() => setMenuOpen(false)}
@@ -456,7 +462,7 @@ export default function App() {
             { label: "Map", icon: "location" as const, target: "map" as const },
             { label: "My quests", icon: "bolt" as const, target: "my-quests" as const },
             { label: "Messages", icon: "chat" as const, target: null },
-            { label: "Wallet", icon: "wallet" as const, target: "wallet" as const },
+            { label: "Payment settings", icon: "check" as const, target: "wallet" as const },
             ...(isAdmin ? [{ label: "Admin review", icon: "book" as const, target: "admin" as const }] : []),
           ].map((item) => (
             <button
@@ -464,6 +470,7 @@ export default function App() {
               onClick={() => {
                 if (item.label === "Messages") {
                   setMenuOpen(false);
+                  setNotificationOpen(false);
                   setChatRequestId("");
                   setChatUnread(false);
                   setChatOpen(true);
@@ -562,7 +569,7 @@ export default function App() {
     onEdit={() => { setQuestToEditId(String(selectedRequest.id)); navigate("my-quests"); }}
     onDelete={() => { void deleteSelectedQuest(); }}
     onViewUser={kerb => { setUserSearchQuery(kerb); setUserProfileKerb(kerb); navigate("users"); }}
-    onMessage={() => { setChatRequestId(String(selectedRequest.id)); setChatOpen(true); }}
+    onMessage={() => { setNotificationOpen(false); setChatRequestId(String(selectedRequest.id)); setChatOpen(true); }}
     onComplete={() => { setRequestsVersion(version => version + 1); }}
     onCancelled={() => { setRequestsVersion(version => version + 1); navigate("map"); }}
   />

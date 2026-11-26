@@ -650,7 +650,7 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
                 </div>
 
 
-                <p className="text-2xl font-extrabold text-[#2081C3]">{selectedRequest.reward}</p>
+                <p className="text-2xl font-extrabold text-[#2081C3]">${selectedRequest.reward}</p>
 
 
                 {stageError && !actionBusy && <p role="alert" className="mr-2 text-sm text-red-700">{stageError}</p>}
@@ -692,7 +692,7 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
 
               {(isRequester || isHelper) && <section className="mt-5 grid gap-4 border-t border-[#BED8D4] pt-5">
                 {questStatus === "pending_review" && <p className="rounded-lg bg-[#EAF3F2] p-3 text-sm">{isRequester ? "Review the submitted completion." : "Waiting for the requester to review your submission."}</p>}
-                {questStatus === "awaiting_payment" && <p className="rounded-lg bg-[#EAF3F2] p-3 text-sm">{isRequester ? `Send the agreed ${selectedRequest.reward} reward.` : `Waiting for your ${selectedRequest.reward} reward.`}</p>}
+                {questStatus === "awaiting_payment" && <p className="rounded-lg bg-[#EAF3F2] p-3 text-sm">{isRequester ? `Send the agreed $${selectedRequest.reward} reward.` : `Waiting for your $${selectedRequest.reward} reward.`}</p>}
                 {questStatus === "payment_sent" && <p className="rounded-lg bg-[#EAF3F2] p-3 text-sm">{isRequester ? "Waiting for the completer to confirm receipt." : "Confirm that you received your reward."}</p>}
                 {questStatus === "in_progress" && isHelper && <form onSubmit={event => { event.preventDefault(); const values = new FormData(event.currentTarget); void workflowAction(`/api/requests/${selectedRequest.id}/completion`, { description: values.get("description"), evidence: values.get("evidence") }); }} className="grid gap-3 rounded-lg border border-[#BED8D4] bg-white p-4">
                   <label className="grid gap-1 text-sm font-semibold">Describe the completed work<textarea name="description" required maxLength={2000} className="min-h-20 rounded-md border border-[#BED8D4] p-3 font-normal" /></label>

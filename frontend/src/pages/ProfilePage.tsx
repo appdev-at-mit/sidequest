@@ -148,7 +148,7 @@ useEffect(() => {
 
             <section className="grid grid-cols-2 border-y border-[#BED8D4] py-6">
               <div className="border-r border-[#BED8D4] px-3 text-center"><p className="text-xl font-extrabold sm:text-2xl">{profile?.completedQuests ?? 0}</p><p className="mt-1 text-xs text-slate-500 sm:text-sm">Completed quests with receipt confirmed</p></div>
-              <div className="px-3 text-center"><p className="text-xl font-extrabold sm:text-2xl">{((profile?.totalConfirmedEarningsCents ?? 0) / 100).toFixed(2)}</p><p className="mt-1 text-xs text-slate-500 sm:text-sm">Self-reported confirmed rewards</p></div>
+              <div className="px-3 text-center"><p className="text-xl font-extrabold sm:text-2xl">${((profile?.totalConfirmedEarningsCents ?? 0) / 100).toFixed(2)}</p><p className="mt-1 text-xs text-slate-500 sm:text-sm">Self-reported confirmed rewards</p></div>
             </section>
             <p className="py-3 text-center text-xs text-slate-500">{profile?.createdAt && `Member since ${new Date(profile.createdAt).toLocaleDateString(undefined, { month: "short", year: "numeric" })}`}</p>
 
@@ -159,7 +159,7 @@ useEffect(() => {
                 {requestsLoading ? <p className="py-5 text-sm text-slate-500">Loading quests...</p> : requestsError ? <p role="alert" className="py-5 text-sm">{requestsError}</p> : postedRequests.length === 0 ? <p className="py-5 text-sm text-slate-500">You haven’t posted any quests yet.</p> : postedRequests.map(request => <article key={request._id} className="flex items-center gap-4 py-5">
                     <div className="min-w-0 flex-1"><h3 className="font-bold">{request.title ?? request.description}</h3><p className="mt-1 text-xs capitalize text-slate-500">{request.status?.replaceAll("_", " ") ?? "open"} · {request.end ? `Deadline: ${new Date(request.end).toLocaleString()}` : "No deadline"}</p></div>
                     {(request.status ?? "open") === "open" && <button onClick={() => handleDeleteRequest(request._id)} className="text-sm font-bold text-red-600">Delete</button>}
-                    <span className="font-extrabold text-[#2081C3]">{Number(request.pay).toFixed(2)} reward</span>
+                    <span className="font-extrabold text-[#2081C3]">${Number(request.pay).toFixed(2)} reward</span>
                   </article>)}
                 </div>
               </div>

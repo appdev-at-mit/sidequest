@@ -39,7 +39,7 @@ export default function WalletPage() {
       <div className="rounded-2xl bg-[#102A3A] p-7 text-white shadow-sm sm:p-9">
         <div><p className="text-lg font-semibold text-white/75 sm:text-xl">Total reward earned</p><p className="mt-1 text-5xl font-extrabold sm:text-6xl">${(totalConfirmedEarningsCents / 100).toFixed(2)}</p></div>
       </div>
-      <div className="mt-6 max-w-2xl rounded-xl border border-[#BED8D4] bg-white p-5">
+      <div className="mt-6 rounded-xl border border-[#BED8D4] bg-white p-5">
         <label className="block text-sm font-semibold">Preferred external payment method
           <select value={method} onChange={event => setMethod(event.target.value)} className="mt-2 w-full rounded-lg border border-[#BED8D4] bg-white p-3">
             {METHODS.map(item => <option key={item}>{item}</option>)}

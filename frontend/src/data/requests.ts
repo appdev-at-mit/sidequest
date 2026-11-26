@@ -16,6 +16,8 @@ export type Request = {
   end?: string | null;
   pickup?: string | null;
   dropoff?: string | null;
+  pickupLocation?: QuestAddress | null;
+  dropoffLocation?: QuestAddress | null;
   createdAt?: string | null;
   expiresAt?: string | null;
   expired?: boolean;
@@ -27,6 +29,7 @@ export type Request = {
   questStage?: number;
   helper?: string | null;
   requester?: string | null;
+  paymentMethod?: string | null;
   acceptedAt?: string | null;
   agreementSnapshot?: {
     title?: string;
@@ -48,6 +51,8 @@ export type Request = {
   statusHistory?: { from?: string | null; to: string; by?: string; at: string }[];
   reviews?: { questId: string; role: string; ratings: Record<string, number>; text: string; createdAt: string }[];
 };
+
+export type QuestAddress = { formattedAddress: string; lat: number; lng: number; provider?: string; providerPlaceId?: string; buildingName?: string; roomNumber?: string };
 
 export const mapRequests: Request[] = [
   {

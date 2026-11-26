@@ -17,7 +17,7 @@ export default function CompleteQuest({selectedRequest, onBack}: Props) {
                 Agreed reward
               </p>
               <p className="mt-2 text-5xl font-extrabold tracking-[-1.5px] text-[#2081C3]">
-                {selectedRequest.reward}
+                ${selectedRequest.reward}
               </p>
               <p className="mt-3 text-sm text-slate-500">Payment was arranged directly between participants. SideQuest does not process or verify it.</p>
             </div>

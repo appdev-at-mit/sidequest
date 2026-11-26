@@ -199,8 +199,8 @@ export default function ExploreTasks({
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
             <div className="flex flex-col gap-3">
               {clusterRequests.map(request => <button key={request.id} onClick={() => { setSelectedRequestId(request.id); setClusterRequests(null); if (typeof request.lat === "number" && typeof request.lng === "number") leafletMap.current?.setView([request.lat, request.lng], Math.max(leafletMap.current.getZoom(), 17), { animate: true }); }} className="w-full overflow-hidden rounded-xl border border-[#BED8D4] bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-[#2081C3] hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#2081C3]">
-                {request.imageUrl ? <img src={request.imageUrl} alt="" className="-mx-4 -mt-4 mb-3 h-32 w-[calc(100%+2rem)] rounded-t-xl border-4 border-white object-cover" /> : <div aria-hidden="true" className="quest-preview-art -mx-4 -mt-4 mb-3 h-32 rounded-none border-4 border-white"><span className="text-3xl">↗</span></div>}
-                <div className="flex items-start justify-between gap-3"><h3 className="font-extrabold">{request.title}</h3><span className="shrink-0 font-extrabold text-[#2081C3]">{request.reward}</span></div>
+                {request.imageUrl ? <img src={request.imageUrl} alt="" className="-mx-4 -mt-4 mb-3 h-32 w-[calc(100%+2rem)] rounded-t-xl border-[6px] border-white object-cover" /> : <div aria-hidden="true" className="quest-preview-art -mx-4 -mt-4 mb-3 h-32 rounded-none border-[6px] border-white"><span className="text-3xl">↗</span></div>}
+                <div className="flex items-start justify-between gap-3"><h3 className="font-extrabold">{request.title}</h3><span className="shrink-0 font-extrabold text-[#2081C3]">${request.reward}</span></div>
                 <p className="mt-1 text-xs text-slate-500">Posted by {request.poster} <span className="ml-1 font-semibold text-slate-600"><span className="text-[#2081C3]">★</span> {request.requesterRating?.toFixed(1) ?? "—"} ({request.requesterReviewCount ?? 0} {request.requesterReviewCount === 1 ? "rating" : "ratings"})</span></p>
                 <p className="mt-2 line-clamp-2 text-sm text-slate-600">{request.description.slice(0, 150)}</p>
               </button>)}
@@ -209,12 +209,15 @@ export default function ExploreTasks({
         </aside>
       )}
       {requestOpen && selectedRequest && !clusterRequests && (
-        <aside
+        <div className="fixed inset-x-0 bottom-0 top-16 z-40 flex items-center justify-center bg-[#102A3A]/35 p-3 sm:p-4" onMouseDown={event => { if (event.target === event.currentTarget) setRequestOpen(false); }}>
+        <section
           role="dialog"
-          aria-label="Request details"
-          className="absolute inset-y-0 right-0 z-40 flex w-full max-w-[400px] flex-col border-l border-[#BED8D4] bg-[#F7F9F9] shadow-lg"
+          aria-modal="true"
+          aria-label="Quest details"
+          onKeyDown={event => { if (event.key === "Escape") setRequestOpen(false); }}
+          className="relative flex max-h-[min(680px,calc(100dvh-5rem))] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-[#BED8D4] bg-[#F7F9F9] text-[#102A3A] shadow-2xl"
         >
-          <div className="relative flex-1 overflow-y-auto p-5 pt-2">
+          <div className="relative min-h-0 flex-1 overflow-y-auto p-5 pt-4 sm:p-7">
             <button
               onClick={() => setRequestOpen(false)}
               aria-label="Close quest"
@@ -253,7 +256,7 @@ export default function ExploreTasks({
               Reward
             </p>
             <p className="mt-1 text-4xl font-extrabold text-[#2081C3]">
-              {selectedRequest.reward}
+              ${selectedRequest.reward}
             </p>
             <div className="mt-5 space-y-3 border-t border-[#BED8D4] pt-4 text-sm">
               <p><span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">Pickup</span><span className="mt-1 block font-semibold text-slate-700">{selectedRequest.pickup || selectedRequest.location || "Location not provided"}</span></p>
@@ -273,7 +276,8 @@ export default function ExploreTasks({
               Accept quest
             </button>}
           </div>
-        </aside>
+        </section>
+        </div>
       )}
     </main>
   );

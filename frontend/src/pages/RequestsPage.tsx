@@ -15,6 +15,10 @@ function distanceKm(from: { lat: number; lng: number }, to: { lat: number; lng: 
   return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+function distanceMiles(from: { lat: number; lng: number }, to: { lat: number; lng: number }) {
+  return distanceKm(from, to) * 0.621371;
+}
+
 export default function RequestsPage({ requests, query, currentLocation, onViewOnMap }: Props) {
   const [category, setCategory] = useState("All");
   const [sortBy, setSortBy] = useState<SortBy>("newest");
@@ -63,8 +67,8 @@ export default function RequestsPage({ requests, query, currentLocation, onViewO
         </div>
       </div>
       {!items.length ? <p className="py-14 text-center text-sm text-slate-500">No requests match your search.</p> : <div className="grid grid-cols-1 gap-5 py-6 sm:grid-cols-2 lg:grid-cols-3">{items.map(request => <button key={request.id} onClick={() => onViewOnMap(request.id)} className="group flex min-w-0 flex-col overflow-hidden rounded-xl border border-[#BED8D4] bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
-        {request.imageUrl ? <img src={request.imageUrl} alt="" className="aspect-[16/9] w-full object-cover" /> : <div className="quest-preview-art aspect-[16/9] w-full rounded-none" aria-hidden="true"><span className="text-4xl">↗</span></div>}
-        <div className="flex flex-1 flex-col p-4"><h2 className="font-extrabold">{request.title}</h2><span className="mt-1 text-xs text-slate-500">Posted by {request.poster}</span><div className="mt-3 grid gap-1 text-xs text-slate-600"><p><span className="font-semibold text-slate-700">Start:</span> {request.pickup || request.location || "Not specified"}</p><p><span className="font-semibold text-slate-700">End:</span> {request.dropoff || "Not specified"}</p></div><QuestCountdown expiresAt={request.expiresAt ?? (request.createdAt ? new Date(new Date(request.createdAt).getTime() + 24 * 60 * 60 * 1000).toISOString() : null)} /><div className="mt-auto flex items-end justify-between border-t border-[#BED8D4] pt-3"><span className="text-lg font-extrabold text-[#2081C3]">{request.reward}</span><span className="text-xs font-semibold text-slate-500">View map →</span></div></div>
+        {request.imageUrl ? <img src={request.imageUrl} alt="" className="aspect-[16/9] w-full border-[6px] border-white object-cover" /> : <div className="quest-preview-art aspect-[16/9] w-full rounded-none border-[6px] border-white" aria-hidden="true"><span className="text-4xl">↗</span></div>}
+        <div className="flex flex-1 flex-col p-4"><div className="flex items-center justify-between gap-3"><h2 className="min-w-0 truncate font-extrabold">{request.title}</h2><span className="shrink-0 text-xs font-semibold text-slate-500">{currentLocation && request.lat != null && request.lng != null ? `${distanceMiles(currentLocation, { lat: request.lat, lng: request.lng }).toFixed(1)} mi away` : "Distance unavailable"}</span></div><span className="mt-1 text-xs text-slate-500">Posted by {request.poster}</span><QuestCountdown expiresAt={request.expiresAt ?? (request.end ? new Date(request.end).toISOString() : request.createdAt ? new Date(new Date(request.createdAt).getTime() + 24 * 60 * 60 * 1000).toISOString() : null)} /><div className="mt-auto flex items-end justify-between border-t border-[#BED8D4] pt-3"><span className="text-lg font-extrabold text-[#2081C3]">${request.reward}</span><span className="text-xs font-semibold text-slate-500">View map →</span></div></div>
       </button>)}</div>}
     </div>
   </main>;

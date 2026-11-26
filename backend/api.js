@@ -7,6 +7,8 @@ import argon2 from "argon2";
 import dotenv from "dotenv";
 import MongoStore from "connect-mongo";
 import path from "path";
+import { createHash } from "node:crypto";
+import locationService from "./location-service.js";
 dotenv.config();
 
 const app = express();
@@ -135,6 +137,12 @@ function summarizeQuestTitle(description) {
     dummyPasswordHash = await argon2.hash("unused authentication placeholder");
 
     console.log("Successfully connected");
+    const cleanupUnattendedQuests = () => db.expireUnattendedQuests()
+        .then(count => { if (count) console.log(`Removed ${count} unattended quest(s) after their deadline grace period.`); })
+        .catch(error => console.error("Quest expiration cleanup failed:", error.name));
+    void cleanupUnattendedQuests();
+    const questCleanupTimer = setInterval(() => { void cleanupUnattendedQuests(); }, 15 * 60 * 1000);
+    questCleanupTimer.unref();
 
     app.get("/api/auth-status", (req, res) => {
         res.json({
@@ -145,55 +153,91 @@ function summarizeQuestTitle(description) {
     });
 
 
-    app.post("/api/post-request", async (req, res) => {
+    app.post("/api/resolve-address", async (req, res) => {
+        if (rateLimited(req, res, "resolve-address", 10, 60 * 1000)) return;
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
+        const text = typeof req.body?.address === "string" ? req.body.address : "";
+        const roomNumber = typeof req.body?.roomNumber === "string" ? req.body.roomNumber : "";
+        try {
+            const result = await locationService.geocodeLegacyAddress(text, roomNumber);
+            if (result.error) return res.status(422).json({ msg: result.error });
+            if (result.needsConfirmation) return res.status(409).json({ needsConfirmation: true, suggestions: result.suggestions });
+            return res.json({ data: result.location });
+        } catch (error) { return res.status(502).json({ msg: error.message || "The location service is temporarily unavailable." }); }
+    });
+
+    app.post("/api/post-request", async (req, res, next) => {
         if (rateLimited(req, res, "post-request", 8, 60 * 60 * 1000)) return;
-        if (!req.isAuthenticated()) {
-            res.status(401).json({
-                result: "fail",
-                msg: "You need to log in first"
-            })
-            return;
-        }
-        if (await db.userIsSuspended(req.user.kerb)) return res.status(403).json({ result: "fail", msg: "Your account is suspended and cannot post quests." });
-        const { description, category, pay, start, end, lat, lng } = req.body ?? {};
+        if (!req.isAuthenticated()) return res.status(401).json({ result: "fail", msg: "You need to log in first" });
+        const idempotencyKey = req.get("Idempotency-Key");
+        if (typeof idempotencyKey !== "string" || !/^[A-Za-z0-9_-]{16,100}$/.test(idempotencyKey)) return res.status(400).json({ msg: "A valid request key is required. Refresh the form and try again." });
+        const body = req.body ?? {};
+        const { description, category, pay, start, end, paymentMethod } = body;
         const rewardCents = typeof pay === "number" ? Math.round(pay * 100) : NaN;
-        const hasLocation = lat != null || lng != null;
-        if (!["Delivery", "Moving", "Home Help", "Tech", "Academic"].includes(category)) {
-            return res.status(400).json({ result: "fail", msg: "Choose a quest category." });
-        }
+        if (!["Delivery", "Moving", "Home Help", "Tech", "Academic"].includes(category)) return res.status(400).json({ result: "fail", msg: "Choose a quest category." });
+        if (!DBController.PAYMENT_METHODS.includes(paymentMethod)) return res.status(400).json({ result: "fail", msg: "Choose a payment method." });
         if (typeof description !== "string" || !description.trim() || description.trim().length > 150
             || !Number.isFinite(pay) || !Number.isSafeInteger(rewardCents) || rewardCents < 300 || rewardCents / 100 !== pay) {
             return res.status(400).json({ result: "fail", msg: "Enter a description and a numeric reward of at least $3." });
         }
-        if (typeof start !== "string" || typeof end !== "string" || !(Date.parse(end) > Date.parse(start))) {
-            return res.status(400).json({ result: "fail", msg: "Choose a deadline after the start time." });
-        }
-        if (hasLocation && (!Number.isFinite(lat) || Math.abs(lat) > 90
-            || !Number.isFinite(lng) || Math.abs(lng) > 180)) {
-            return res.status(400).json({ result: "fail", msg: "Choose a valid location on the map." });
-        }
-        const imageUrl = typeof req.body.imageUrl === "string" ? req.body.imageUrl : "";
+        const startMs = typeof start === "string" ? Date.parse(start) : NaN;
+        const endMs = typeof end === "string" ? Date.parse(end) : NaN;
+        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || !(endMs > startMs)) return res.status(400).json({ result: "fail", msg: "Choose a valid deadline after the start time." });
+        const imageUrl = typeof body.imageUrl === "string" ? body.imageUrl : "";
         const validPhoto = imageUrl.length <= 7_000_000 && (!imageUrl || /^data:image\/(?:png|jpe?g|webp|gif);base64,[A-Za-z0-9+/]+=*$/i.test(imageUrl));
         if (!validPhoto) return res.status(400).json({ result: "fail", msg: "Choose an image under 5 MB in PNG, JPEG, WebP, or GIF format." });
-        const cleanDescription = sanitizeText(description, 150);
-        const title = summarizeQuestTitle(cleanDescription);
 
-        const request = await db.postRequest({
+        let suspended, pickupResult, dropoffResult;
+        try {
+            [suspended, pickupResult, dropoffResult] = await Promise.all([
+                db.userIsSuspended(req.user.kerb),
+                locationService.resolveLocation(body.pickupLocation ?? body.pickup),
+                locationService.resolveLocation(body.dropoffLocation ?? body.dropoff),
+            ]);
+        } catch (error) {
+            if (error?.name === "TimeoutError" || error?.name === "AbortError") return res.status(502).json({ msg: "The location service timed out. Please try again." });
+            if (error instanceof TypeError) return res.status(502).json({ msg: "The location service is unavailable. Please try again." });
+            return next(error);
+        }
+        if (suspended) return res.status(403).json({ result: "fail", msg: "Your account is suspended and cannot post quests." });
+        if (pickupResult.needsConfirmation || dropoffResult.needsConfirmation) {
+            return res.status(409).json({ needsConfirmation: true, msg: "Confirm the pickup and drop-off locations from the suggestions.", pickupSuggestions: pickupResult.suggestions ?? [], dropoffSuggestions: dropoffResult.suggestions ?? [] });
+        }
+        if (pickupResult.error || dropoffResult.error) return res.status(422).json({ msg: pickupResult.error || dropoffResult.error });
+        const pickupLocation = pickupResult.location;
+        const dropoffLocation = dropoffResult.location;
+        const policyError = [pickupLocation, dropoffLocation].some(location => /\b(steam tunnels?|hvac|rooftops?|domes?|construction sites?|locked (?:office|lab|laboratory|room|building|area)|private (?:area|building|residence))\b/i.test(`${location.formattedAddress} ${location.roomNumber ?? ""}`));
+        if (policyError) return res.status(400).json({ msg: "Choose an accessible public address. Restricted or locked locations cannot be used." });
+        if ([pickupLocation, dropoffLocation].some(location => /\bresidence hall\b/i.test(location.formattedAddress) && !/\b(front desk|lobby|authorized entrance)\b/i.test(`${location.formattedAddress} ${location.roomNumber ?? ""}`))) return res.status(400).json({ msg: "For residence halls, meet at the lobby or front desk unless you have authorization to enter." });
+        const cleanDescription = sanitizeText(description, 150);
+        const payload = {
             requester: req.user.kerb,
             description: cleanDescription,
-            title,
+            title: summarizeQuestTitle(cleanDescription),
             category,
             rewardCents,
-            start,
-            end,
-            pickup: sanitizeText(req.body.pickup, 200),
-            dropoff: sanitizeText(req.body.dropoff, 200),
+            paymentMethod,
+            start: new Date(startMs).toISOString(),
+            end: new Date(endMs).toISOString(),
+            pickup: [pickupLocation.formattedAddress, pickupLocation.roomNumber ? `Room ${pickupLocation.roomNumber}` : ""].filter(Boolean).join(", "),
+            dropoff: [dropoffLocation.formattedAddress, dropoffLocation.roomNumber ? `Room ${dropoffLocation.roomNumber}` : ""].filter(Boolean).join(", "),
+            pickupLocation,
+            dropoffLocation,
+            lat: pickupLocation.lat,
+            lng: pickupLocation.lng,
             imageUrl,
-            ...(hasLocation ? { lat, lng } : {}),
-        });
+            idempotencyKey,
+            payloadFingerprint: createHash("sha256").update(JSON.stringify({ cleanDescription, category, rewardCents, paymentMethod, startMs, endMs, pickupLocation, dropoffLocation, imageUrl })).digest("hex"),
+        };
+        let request;
+        try { request = await db.postRequest(payload); }
+        catch (error) { return next(error); }
+        if (request?.conflict) return res.status(409).json({ msg: "This request key was already used for a different quest. Refresh the form before submitting again." });
         if (!request) return res.status(403).json({ result: "fail", msg: "Your account is suspended and cannot post quests." });
-        res.status(201).json({ result: "success", msg: "Created quest", data: request });
-    })
+        const created = request.data ?? request;
+        const { idempotencyKey: _idempotencyKey, payloadFingerprint: _payloadFingerprint, ...publicRequest } = created;
+        return res.status(request.duplicate ? 200 : 201).json({ result: "success", msg: "Created quest", data: publicRequest });
+    });
 
     app.put("/api/requests/:id", async (req, res, next) => {
         if (rateLimited(req, res, "edit-request", 30)) return;
@@ -206,12 +250,14 @@ function summarizeQuestTitle(description) {
             || !Number.isFinite(pay) || !Number.isSafeInteger(rewardCents) || rewardCents < 300 || rewardCents / 100 !== pay) {
             return res.status(400).json({ msg: "Enter a description and a numeric reward of at least $3." });
         }
-        if (typeof start !== "string" || typeof end !== "string" || !(Date.parse(end) > Date.parse(start))) return res.status(400).json({ msg: "Choose a deadline after the start time." });
+        const startMs = typeof start === "string" ? Date.parse(start) : NaN;
+        const endMs = typeof end === "string" ? Date.parse(end) : NaN;
+        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || !(endMs > startMs)) return res.status(400).json({ msg: "Choose a deadline after the start time." });
         try {
             const cleanDescription = sanitizeText(description, 150);
             const request = await db.updateOpenRequest(req.params.id, req.user.kerb, {
                 description: cleanDescription, title: summarizeQuestTitle(cleanDescription), category,
-                rewardCents, pay, start, end,
+                rewardCents, pay, start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString(), expiresAt: new Date(endMs),
             });
             if (!request) return res.status(409).json({ msg: "Only your open, unexpired quests can be edited." });
             res.json({ result: "success", data: request });
@@ -372,15 +418,18 @@ function summarizeQuestTitle(description) {
         catch (error) { next(error); }
     });
 
-    app.post("/api/payment-preference", async (req, res) => {
+    app.post("/api/payment-preference", async (req, res, next) => {
         if (rateLimited(req, res, "payment-preference", 20)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
         const { method, instructions } = req.body ?? {};
         if (!DBController.PAYMENT_METHODS.includes(method) || typeof instructions !== "string" || instructions.length > 160) {
             return res.status(400).json({ msg: "Choose a supported external payment method and keep instructions under 160 characters." });
         }
-        await db.updatePaymentPreference(req.user.kerb, method, sanitizeText(instructions, 160));
-        res.json({ result: "success", msg: "Payment preference saved. It will be shared only with an accepted quest requester." });
+        try {
+            const saved = await db.updatePaymentPreference(req.user.kerb, method, sanitizeText(instructions, 160));
+            if (!saved) return res.status(404).json({ msg: "Your SideQuest account could not be found. Sign in again and retry." });
+            return res.json({ result: "success", msg: "Payment preference saved. It will be shared only with an accepted quest requester." });
+        } catch (error) { return next(error); }
     });
 
     app.get("/api/admin/status", (req, res) => {

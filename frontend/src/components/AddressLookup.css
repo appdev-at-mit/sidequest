@@ -1,0 +1,8 @@
+.address-lookup-input:autofill,
+.address-lookup-input:-webkit-autofill,
+.address-lookup-input:-webkit-autofill:hover,
+.address-lookup-input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #102a3a;
+  -webkit-box-shadow: 0 0 0 1000px #fff inset;
+  box-shadow: 0 0 0 1000px #fff inset;
+}
