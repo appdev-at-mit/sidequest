@@ -1,12 +1,14 @@
+import { apiFetch } from "../api";
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import Icon from "./Icon";
 import AddressLookup, { type GeocodedAddress } from "./AddressLookup";
 import { addressPolicyError } from "../data/addressPolicy";
 import { inputSchemas, MAX_REWARD_CENTS } from "../data/validation";
+import { uploadImage } from "../data/imageUpload";
 import "./PostRequestDialog.css";
 
-type Props = { onClose: () => void; onPosted: () => void };
+type Props = { open: boolean; onClose: () => void; onPosted: (message: string) => void };
 const inputClass = "mt-1 block w-full rounded-lg border border-[#BED8D4] bg-white p-2.5";
 const paymentMethods = ["Cash", "PayPal", "Venmo", "Cash App", "Zelle", "Other"];
 const timeOptions = Array.from({ length: 48 }, (_, index) => {
@@ -44,7 +46,7 @@ function toGeocodedAddress(value: Record<string, unknown>): GeocodedAddress | nu
   return { address, lat, lng, provider: typeof value.provider === "string" ? value.provider : "photon", providerPlaceId: typeof value.providerPlaceId === "string" ? value.providerPlaceId : "", buildingName: typeof value.buildingName === "string" ? value.buildingName : undefined, roomNumber: typeof value.roomNumber === "string" ? value.roomNumber : undefined };
 }
 
-export default function PostRequestDialog({ onClose, onPosted }: Props) {
+export default function PostRequestDialog({ open, onClose, onPosted }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [dropoffPrefill] = useState(readDefaultDropoff);
   const [pickup, setPickup] = useState<GeocodedAddress | null>(null);
@@ -57,20 +59,22 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
   const dropoffEdited = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [photoData, setPhotoData] = useState("");
+  const [photoImageId, setPhotoImageId] = useState("");
+  const [photoUrl, setPhotoUrl] = useState("");
+  const [photoUploading, setPhotoUploading] = useState(false);
   const [photoName, setPhotoName] = useState("");
   const photoInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const element = dialog.current;
-    element?.showModal();
-    return () => element?.close();
-  }, []);
+    if (open && element && !element.open) element.showModal();
+    else if (!open && element?.open) element.close();
+  }, [open]);
 
   useEffect(() => {
-    if (!dropoffPrefill.text || dropoffPrefill.address) return;
+    if (!open || !dropoffPrefill.text || dropoffPrefill.address) return;
     const controller = new AbortController();
-    fetch("/api/resolve-address", { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal, body: JSON.stringify({ address: dropoffPrefill.text, roomNumber: dropoffPrefill.roomNumber }) })
+    apiFetch("/api/resolve-address", { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal, body: JSON.stringify({ address: dropoffPrefill.text, roomNumber: dropoffPrefill.roomNumber }) })
       .then(async response => {
         const body = await response.json().catch(() => null);
         if (controller.signal.aborted || dropoffEdited.current) return;
@@ -84,12 +88,13 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
       })
       .catch(reason => { if (!controller.signal.aborted && !dropoffEdited.current) setError(reason instanceof Error ? reason.message : "Select a saved address suggestion to confirm its location."); });
     return () => controller.abort();
-  }, [dropoffPrefill]);
+  }, [dropoffPrefill, open]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
-    const fields = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const fields = new FormData(form);
     const pay = Number(fields.get("pay"));
     if (!Number.isFinite(pay) || pay < 3 || !inputSchemas.rewardCents(Math.round(pay * 100))) { setError(`The reward must be between $3.00 and $${(MAX_REWARD_CENTS / 100).toFixed(2)}.`); return; }
     if (!inputSchemas.boundedText(String(fields.get("description") ?? ""), 150)) { setError("Enter a quest description under 150 characters."); return; }
@@ -110,27 +115,38 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
 
     setBusy(true); setError("");
     try {
-      const response = await fetch("/api/post-request", {
+      const response = await apiFetch("/api/post-request", {
         method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": submissionKey.current },
         body: JSON.stringify({
           description: String(fields.get("description")).trim(), pay,
           category: String(fields.get("category")),
           paymentMethod: String(fields.get("paymentMethod")),
           start: start.toISOString(), end: end.toISOString(), lat: pickup.lat, lng: pickup.lng,
-          pickup: pickupAddress, dropoff: dropoffAddress, pickupLocation, dropoffLocation, imageUrl: photoData,
+          pickup: pickupAddress, dropoff: dropoffAddress, pickupLocation, dropoffLocation, ...(photoImageId ? { imageId: photoImageId } : {}),
         }),
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null);
         setError(body?.msg ?? "Could not post the request. Try again."); return;
       }
-      onPosted();
+      const body = await response.json().catch(() => null);
+      form.reset();
+      setPickup(null);
+      setDropoff(dropoffPrefill.address);
+      setPickupRoom("");
+      setDropoffRoom(dropoffPrefill.roomNumber);
+      setPhotoImageId("");
+      setPhotoUrl("");
+      setPhotoName("");
+      submissionKey.current = crypto.randomUUID();
+      onPosted(body?.msg ?? "Quest posted.");
     } catch { setError("Could not reach SideQuest. Try again."); }
     finally { setBusy(false); }
   }
 
   return <dialog ref={dialog} aria-labelledby="post-request-title"
-    onCancel={event => event.preventDefault()}
+    onClick={event => { if (event.target === dialog.current && !busy) onClose(); }}
+    onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}
     className="post-request-dialog m-auto max-h-[calc(100dvh-4rem)] w-[calc(100%-2rem)] max-w-lg overflow-auto rounded-2xl border border-[#BED8D4] bg-[#F7F9F9] p-5 text-[#102A3A] shadow-xl backdrop:bg-[#102A3A]/50 sm:p-7">
     <div className="mb-5 flex items-center justify-between gap-4">
       <h2 id="post-request-title" className="text-2xl font-extrabold">Post a quest</h2>
@@ -145,19 +161,18 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-sm font-semibold">Photo (optional)</span>
             <button type="button" onClick={() => photoInput.current?.click()} className="rounded-lg border border-[#BED8D4] bg-white px-4 py-2.5 text-sm font-bold text-[#08679e]">Upload photo</button>
-            {photoName && <><span className="max-w-56 truncate text-sm text-slate-600">{photoName}</span><button type="button" onClick={() => { setPhotoData(""); setPhotoName(""); if (photoInput.current) photoInput.current.value = ""; }} className="text-sm font-semibold text-slate-600 underline">Remove</button></>}
+            {photoName && <><span className="max-w-56 truncate text-sm text-slate-600">{photoName}</span><button type="button" disabled={photoUploading} onClick={() => { setPhotoImageId(""); setPhotoUrl(""); setPhotoName(""); if (photoInput.current) photoInput.current.value = ""; }} className="text-sm font-semibold text-slate-600 underline disabled:opacity-50">Remove</button></>}
           </div>
-          <input ref={photoInput} type="file" accept="image/*" className="sr-only" aria-label="Choose a photo from your device" onChange={event => {
+          <input ref={photoInput} type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" className="sr-only" aria-label="Choose a photo from your device" onChange={async event => {
             const file = event.currentTarget.files?.[0];
             if (!file) return;
-            if (!file.type.startsWith("image/")) { setError("Choose an image file."); event.currentTarget.value = ""; return; }
-            if (file.size > 5 * 1024 * 1024) { setError("Choose an image under 5 MB."); event.currentTarget.value = ""; return; }
-            const reader = new FileReader();
-            reader.onload = () => { setPhotoData(typeof reader.result === "string" ? reader.result : ""); setPhotoName(file.name); setError(""); };
-            reader.onerror = () => setError("Could not read that image. Try another file.");
-            reader.readAsDataURL(file);
+            setPhotoUploading(true); setPhotoImageId(""); setPhotoUrl(""); setError("");
+            try { const uploaded = await uploadImage(file, "quest"); setPhotoImageId(uploaded.id); setPhotoUrl(uploaded.url); setPhotoName(file.name); }
+            catch (reason) { setError(reason instanceof Error ? reason.message : "Could not upload that image."); event.currentTarget.value = ""; }
+            finally { setPhotoUploading(false); }
           }} />
-          {photoData && <img src={photoData} alt="Selected quest photo preview" className="mt-2 max-h-32 rounded-lg object-cover" />}
+          {photoUploading && <span className="text-xs text-slate-500">Uploading image…</span>}
+          {photoUrl && <img src={photoUrl} alt="Selected quest photo preview" className="mt-2 max-h-32 rounded-lg object-cover" />}
         </div>
         <div className="flex items-center gap-2"><label htmlFor="quest-reward" className="text-sm font-semibold">Reward</label><input id="quest-reward" name="pay" className="block w-24 rounded-lg border border-[#BED8D4] bg-white p-2.5" type="number" min="3" max={(MAX_REWARD_CENTS / 100).toFixed(2)} step="0.01" required /></div>
       </div>
@@ -179,7 +194,7 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
       <p className="-mt-2 text-xs text-slate-500">Choose a publicly accessible address. Residence hall meetups should be at the lobby or front desk.</p>
       {error && <p role="alert" className="text-sm font-semibold text-red-700">{error}</p>}
       <p className="text-xs leading-5 text-slate-500">SideQuest records quest agreements and payment confirmations but does not process, guarantee, or insure external payments.</p>
-      <button type="submit" disabled={busy} className="rounded-lg bg-[#08679e] p-3 text-sm font-bold text-white disabled:opacity-60">{busy ? "Posting…" : "Post quest"}</button>
+      <button type="submit" disabled={busy || photoUploading} className="rounded-lg bg-[#08679e] p-3 text-sm font-bold text-white disabled:opacity-60">{photoUploading ? "Uploading image…" : busy ? "Posting…" : "Post quest"}</button>
     </form>
   </dialog>;
 }

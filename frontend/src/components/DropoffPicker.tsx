@@ -1,3 +1,4 @@
+import { apiFetch } from "../api";
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import L from "leaflet";
@@ -9,7 +10,7 @@ import "./DropoffPicker.css";
 
 type BuildingType = "House" | "Apartment" | "Office" | "Hotel" | "Other";
 export type SavedAddress = { id: string; address: string; label: string; instructions: string; buildingType: BuildingType; lat?: number; lng?: number; provider?: string; providerPlaceId?: string; buildingName?: string; roomNumber?: string; suggestionTitle?: string; suggestionSubtitle?: string };
-type PhotonFeature = { geometry?: { coordinates?: [number, number] }; properties?: { name?: string; housenumber?: string; street?: string; district?: string; city?: string; county?: string; state?: string; postcode?: string; country?: string; osm_id?: number; osm_type?: string } };
+type PhotonFeature = { geometry?: { coordinates?: [number, number] }; properties?: { name?: string; ref?: string; osm_value?: string; housenumber?: string; street?: string; district?: string; city?: string; county?: string; state?: string; postcode?: string; country?: string; osm_id?: number; osm_type?: string } };
 type ReverseGeoResult = { display_name?: string; lat?: string; lon?: string };
 type Props = { onClose: () => void; onSelectAddress: (address: SavedAddress | null) => void };
 const STORAGE_KEY = "sidequest-saved-dropoffs";
@@ -51,11 +52,11 @@ export default function DropoffPicker({ onClose, onSelectAddress }: Props) {
       setError("");
       try {
         const params = new URLSearchParams({ q: building.query, limit: "5", lang: "en", lat: "42.3585", lon: "-71.0935", zoom: "17", location_bias_scale: "0.1" });
-        const response = await fetch(`https://photon.komoot.io/api/?${params.toString()}`, { signal: controller.signal, headers: { Accept: "application/geo+json, application/json" } });
+        const response = await apiFetch(`https://photon.komoot.io/api/?${params.toString()}`, { signal: controller.signal, headers: { Accept: "application/geo+json, application/json" } });
         if (!response.ok) throw new Error("Search unavailable");
         const payload: { features?: PhotonFeature[] } = await response.json();
         const buildingFeatures = building.isBuilding
-          ? (payload.features ?? []).filter(feature => isMatchingMITBuilding(feature.properties?.name, value))
+          ? (payload.features ?? []).filter(feature => [feature.properties?.name, feature.properties?.ref, feature.properties?.osm_value].some(name => isMatchingMITBuilding(name, value)))
           : payload.features ?? [];
         const suggestions = buildingFeatures.map(feature => {
           const properties = feature.properties ?? {};
@@ -96,7 +97,7 @@ export default function DropoffPicker({ onClose, onSelectAddress }: Props) {
     if (!Number.isFinite(address.lat) || !Number.isFinite(address.lng)) {
       try {
         setSuggestionsLoading(true);
-        const response = await fetch("/api/resolve-address", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: address.address, roomNumber: address.roomNumber ?? "" }) });
+        const response = await apiFetch("/api/resolve-address", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ address: address.address, roomNumber: address.roomNumber ?? "" }) });
         const body = await response.json().catch(() => null);
         if (response.status === 409 && body?.needsConfirmation) {
           const suggestions: SavedAddress[] = (body.suggestions ?? []).map((item: SavedAddress & { formattedAddress?: string }) => ({ ...address, ...item, address: item.formattedAddress ?? item.address, id: crypto.randomUUID(), suggestionTitle: item.buildingName || item.formattedAddress || item.address, suggestionSubtitle: item.formattedAddress ?? item.address }));
@@ -192,7 +193,7 @@ export default function DropoffPicker({ onClose, onSelectAddress }: Props) {
     navigator.geolocation.getCurrentPosition(async position => {
       try {
         const { latitude, longitude } = position.coords;
-        const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}`, { headers: { Accept: "application/json" } });
+        const response = await apiFetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${latitude}&lon=${longitude}`, { headers: { Accept: "application/json" } });
         if (!response.ok) throw new Error("Could not find an address for your current location.");
         const result: ReverseGeoResult = await response.json();
         const address: SavedAddress = { id: crypto.randomUUID(), address: result.display_name, label: "Current location", instructions: "", buildingType: "Other", lat: latitude, lng: longitude };

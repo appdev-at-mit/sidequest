@@ -1,3 +1,4 @@
+import { apiFetch } from "./api";
 import { createContext, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
@@ -25,7 +26,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     async function checkLogin() {
       try {
-        const response = await fetch("/api/auth-status", { signal: controller.signal });
+        const response = await apiFetch("/api/auth-status", { signal: controller.signal });
         const data = response.ok ? await response.json() : null;
         if (!controller.signal.aborted) {
           setIsLoggedIn(data?.isLoggedIn === true);

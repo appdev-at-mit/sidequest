@@ -1,3 +1,4 @@
+import { apiFetch } from "../api";
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import Icon from "../components/Icon";
@@ -8,6 +9,8 @@ type Quest = {
   requester?: string | null;
   helper?: string | null;
   status?: string;
+  moderationStatus?: "approved" | "pending_review" | "rejected";
+  moderationMessage?: string | null;
   expired?: boolean;
   expirationGraceUntil?: string | null;
   lastCancellation?: { role?: string; reason?: string; previousAcceptor?: string | null; at?: string | null } | null;
@@ -23,6 +26,7 @@ type Quest = {
   requesterApprovedAt?: string | null;
   paymentSentAt?: string | null;
   paymentConfirmedAt?: string | null;
+  reviewSubmitted?: boolean;
 };
 type Tab = "posted" | "accepted" | "past";
 const activeStatuses = new Set(["open", "in_progress", "pending_review", "awaiting_payment", "payment_sent", "disputed", "expired"]);
@@ -60,7 +64,7 @@ export default function MyQuestsPage({ refreshKey, editQuestId, onEditOpened, on
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true); setError("");
-    fetch("/api/my-quests", { signal: controller.signal })
+    apiFetch("/api/my-quests", { signal: controller.signal })
       .then(async response => {
         const result = await response.json().catch(() => null);
         if (!response.ok) throw new Error(result?.msg ?? "Could not load your quests.");
@@ -90,7 +94,7 @@ export default function MyQuestsPage({ refreshKey, editQuestId, onEditOpened, on
     if (!window.confirm(quest.status === "expired" || quest.expired ? "Delete this expired quest?" : "Delete this open quest?")) return;
     setActionError("");
     try {
-      const response = await fetch(`/api/requests/${quest._id}`, { method: "DELETE" });
+      const response = await apiFetch(`/api/requests/${quest._id}`, { method: "DELETE" });
       const result = await response.json().catch(() => null);
       if (!response.ok) throw new Error(result?.msg ?? "Could not delete the quest.");
       setQuests(current => current.filter(item => item._id !== quest._id));
@@ -106,7 +110,7 @@ export default function MyQuestsPage({ refreshKey, editQuestId, onEditOpened, on
     if (!Number.isFinite(Number(values.get("pay"))) || Number(values.get("pay")) < 3) { setActionError("The reward must be at least $3."); return; }
     setSaving(true);
     try {
-      const response = await fetch(`/api/requests/${editing._id}`, {
+      const response = await apiFetch(`/api/requests/${editing._id}`, {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           description: String(values.get("description")).trim(), category: String(values.get("category")),
@@ -129,7 +133,7 @@ export default function MyQuestsPage({ refreshKey, editQuestId, onEditOpened, on
     if (!endValue || !Number.isFinite(end.getTime()) || end.getTime() <= Date.now()) { setActionError("Choose a future deadline."); return; }
     setSaving(true); setActionError("");
     try {
-      const response = await fetch(`/api/requests/${extending._id}/extend`, {
+      const response = await apiFetch(`/api/requests/${extending._id}/extend`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ end: end.toISOString() }),
       });
       const result = await response.json().catch(() => null);
@@ -147,7 +151,7 @@ export default function MyQuestsPage({ refreshKey, editQuestId, onEditOpened, on
       </nav>
       {tab === "posted" && !showFirstPostPrompt && <div className="flex justify-end py-5"><button type="button" onClick={onPostQuest} className="rounded-lg bg-[#08679e] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#075785]">+ Post a quest</button></div>}
       {actionError && <p role="alert" className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{actionError}</p>}
-      {loading ? <p role="status" className="py-8 text-center text-sm text-slate-500">Loading your quests…</p> : error ? <p role="alert" className="rounded-xl border border-red-200 bg-white p-5 text-sm text-red-700">{error}</p> : visibleQuests.length === 0 ? <div className={tab === "posted" ? "rounded-xl border border-[#BED8D4] bg-white p-8 text-center" : "py-4 text-center"}><p className="font-normal text-slate-600">{tab === "posted" ? "You haven’t posted a quest yet." : tab === "accepted" ? "Accept a quest to view accepted quests." : "No past quests"}</p>{tab === "posted" && <button type="button" onClick={onPostQuest} className="mt-4 rounded-lg bg-[#08679e] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#075785]">Post a quest</button>}</div> : <div className="grid gap-3">{visibleQuests.map(quest => {
+      {loading ? <p role="status" className="py-8 text-center text-sm text-slate-500">Loading your quests…</p> : error ? <p role="alert" className="rounded-xl border border-red-200 bg-white p-5 text-sm text-red-700">{error}</p> : visibleQuests.length === 0 ? <div className="py-16 text-center"><p className="font-normal text-slate-600">{tab === "posted" ? "You haven’t posted a quest yet." : tab === "accepted" ? "Accept a quest to view accepted quests." : "No past quests"}</p>{tab === "posted" && <button type="button" onClick={onPostQuest} className="mt-4 rounded-lg bg-[#08679e] px-4 py-2.5 text-sm font-bold text-white hover:bg-[#075785]">Post a quest</button>}</div> : <div className="grid gap-3">{visibleQuests.map(quest => {
         const isOwnPost = quest.requester === userKerb;
         const isExpired = quest.status === "expired" || ((quest.status ?? "open") === "open" && Boolean(quest.expired));
         const isOpen = (quest.status ?? "open") === "open" && !isExpired;
@@ -158,8 +162,9 @@ export default function MyQuestsPage({ refreshKey, editQuestId, onEditOpened, on
         const expiredMessage = isExpired ? quest.lastCancellation?.role === "acceptor"
           ? "The acceptor cancelled. Your quest has expired."
           : "Your quest has expired." : "";
-        return <article key={quest._id} role="link" tabIndex={0} onClick={() => onViewQuest(quest._id)} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onViewQuest(quest._id); } }} className="cursor-pointer rounded-xl border border-[#BED8D4] bg-white p-4 shadow-sm transition hover:border-[#2081C3] hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#2081C3] sm:p-5">
-          <div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0 flex-1"><span className={`inline-flex rounded-full px-3 py-1 text-xs font-bold capitalize ${isExpired || quest.status === "completed" ? "bg-slate-100 text-slate-600" : quest.status === "open" ? "bg-emerald-50 text-emerald-700" : "bg-sky-50 text-sky-700"}`}>{isExpired ? "Expired" : (quest.status ?? "open").replaceAll("_", " ")}</span><h2 className="mt-3 text-lg font-extrabold">{quest.title ?? quest.description}</h2><p className="mt-1 line-clamp-2 text-sm text-slate-600">{quest.description}</p><p className="mt-2 text-xs text-slate-500">{isOwnPost ? "Posted by you" : "Accepted by you"}{quest.end ? ` · Due ${new Date(quest.end).toLocaleString()}` : ""}{quest.category ? ` · ${quest.category}` : ""}</p>
+        return <article key={quest._id} role="link" tabIndex={0} onClick={() => onViewQuest(quest._id)} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onViewQuest(quest._id); } }} className="min-w-0 overflow-hidden cursor-pointer rounded-xl border border-[#BED8D4] bg-white p-4 shadow-sm transition hover:border-[#2081C3] hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#2081C3] sm:p-5">
+          <div className="flex min-w-0 flex-wrap items-start justify-between gap-4"><div className="min-w-0 flex-1"><span className={`inline-flex rounded-full px-3 py-1 text-xs font-bold capitalize ${isExpired || quest.status === "completed" ? "bg-slate-100 text-slate-600" : quest.moderationStatus === "pending_review" ? "bg-amber-50 text-amber-800" : quest.moderationStatus === "rejected" ? "bg-red-50 text-red-700" : quest.status === "open" ? "bg-emerald-50 text-emerald-700" : "bg-sky-50 text-sky-700"}`}>{quest.moderationStatus === "pending_review" ? "Awaiting moderation" : quest.moderationStatus === "rejected" ? "Needs changes" : isExpired ? "Expired" : (quest.status ?? "open").replaceAll("_", " ")}</span><h2 className="mt-3 max-w-full truncate text-lg font-extrabold" title={quest.title ?? quest.description}>{quest.title ?? quest.description}</h2><p className="mt-1 line-clamp-2 max-w-full text-sm text-slate-600 [overflow-wrap:anywhere]">{quest.description}</p><p className="mt-2 text-xs text-slate-500">{isOwnPost ? "Posted by you" : "Accepted by you"}{quest.end ? ` · Due ${new Date(quest.end).toLocaleString()}` : ""}{quest.category ? ` · ${quest.category}` : ""}</p>
+            {isOwnPost && quest.moderationStatus && quest.moderationStatus !== "approved" && <p className={`mt-2 text-sm ${quest.moderationStatus === "rejected" ? "text-red-700" : "text-amber-800"}`}>{quest.moderationMessage}</p>}
             {reopenedMessage && <p className="mt-2 text-sm text-[#08679e]">{reopenedMessage}</p>}
             {expiredMessage && <p className="mt-2 text-sm text-slate-600">{expiredMessage} {remainingMs > 0 ? `This quest will be automatically removed in ${remainingText}. Extend your deadline to make it available again.` : "This quest is being archived."}</p>}
           </div><div className="shrink-0 text-right"><span className="block text-xs text-slate-500">Reward</span><span className="text-3xl font-extrabold text-[#2081C3]">${Number(quest.pay).toFixed(2)}</span></div></div>
@@ -171,7 +176,7 @@ export default function MyQuestsPage({ refreshKey, editQuestId, onEditOpened, on
             { label: "Reward sent", at: quest.paymentSentAt },
             { label: "Payment confirmed", at: quest.paymentConfirmedAt },
           ].map(item => <li key={item.label} className="relative"><span className={`absolute -left-[1.35rem] top-1 h-3 w-3 rounded-full border-2 ${item.at ? "border-[#2081C3] bg-[#2081C3]" : "border-slate-300 bg-white"}`} /><span className={item.at ? "font-semibold" : "text-slate-400"}>{item.label}</span>{item.at && <time className="ml-2 text-xs text-slate-500">{new Date(item.at).toLocaleString()}</time>}</li>)}</ol></details>}
-          <div className="mt-4 flex flex-wrap justify-end gap-2 pt-4">{tab === "posted" && isOpen && <><button type="button" onClick={event => { event.stopPropagation(); setEditing(quest); setActionError(""); }} className="rounded-lg border border-[#BED8D4] px-4 py-2 text-sm font-bold hover:bg-[#EAF3F2]">Edit quest</button><button type="button" onClick={event => { event.stopPropagation(); void removeQuest(quest); }} className="rounded-lg border border-red-200 px-4 py-2 text-sm font-bold text-red-700 hover:bg-red-50">Delete quest</button></>}{tab === "posted" && isOwnPost && isExpired && remainingMs > 0 && <><button type="button" onClick={event => { event.stopPropagation(); setExtending(quest); setActionError(""); }} className="rounded-lg border border-[#BED8D4] px-4 py-2 text-sm font-bold hover:bg-[#EAF3F2]">Extend deadline</button><button type="button" onClick={event => { event.stopPropagation(); setEditing(quest); setActionError(""); }} className="rounded-lg bg-[#08679e] px-4 py-2 text-sm font-bold text-white hover:bg-[#075785]">Repost quest</button><button type="button" onClick={event => { event.stopPropagation(); void removeQuest(quest); }} className="rounded-lg border border-red-200 px-4 py-2 text-sm font-bold text-red-700 hover:bg-red-50">Delete quest</button></>}{tab === "accepted" && <button type="button" onClick={event => { event.stopPropagation(); onViewQuest(quest._id); }} className="rounded-lg bg-[#08679e] px-4 py-2 text-sm font-bold text-white">View progress</button>}{tab === "past" && <span className="text-sm text-slate-500">{isOwnPost ? "Posted by you" : "Accepted by you"}</span>}</div>
+          <div className="mt-4 flex flex-wrap justify-end gap-2 pt-4">{tab === "posted" && isOpen && <>{quest.moderationStatus !== "pending_review" && <button type="button" onClick={event => { event.stopPropagation(); setEditing(quest); setActionError(""); }} className="rounded-lg border border-[#BED8D4] px-4 py-2 text-sm font-bold hover:bg-[#EAF3F2]">Edit quest</button>}<button type="button" onClick={event => { event.stopPropagation(); void removeQuest(quest); }} className="rounded-lg border border-red-200 px-4 py-2 text-sm font-bold text-red-700 hover:bg-red-50">Delete quest</button></>}{tab === "posted" && isOwnPost && isExpired && remainingMs > 0 && <><button type="button" onClick={event => { event.stopPropagation(); setExtending(quest); setActionError(""); }} className="rounded-lg border border-[#BED8D4] px-4 py-2 text-sm font-bold hover:bg-[#EAF3F2]">Extend deadline</button><button type="button" onClick={event => { event.stopPropagation(); setEditing(quest); setActionError(""); }} className="rounded-lg bg-[#08679e] px-4 py-2 text-sm font-bold text-white hover:bg-[#075785]">Repost quest</button><button type="button" onClick={event => { event.stopPropagation(); void removeQuest(quest); }} className="rounded-lg border border-red-200 px-4 py-2 text-sm font-bold text-red-700 hover:bg-red-50">Delete quest</button></>}{tab === "accepted" && <button type="button" onClick={event => { event.stopPropagation(); onViewQuest(quest._id); }} className="rounded-lg bg-[#08679e] px-4 py-2 text-sm font-bold text-white">View progress</button>}{tab === "past" && <><span className="self-center text-sm text-slate-500">{isOwnPost ? "Posted by you" : "Accepted by you"}</span>{quest.status === "completed" && !quest.reviewSubmitted && <button type="button" onClick={event => { event.stopPropagation(); onViewQuest(quest._id); }} className="rounded-lg border border-[#BED8D4] px-4 py-2 text-sm font-bold text-[#08679e]">Leave a review</button>}{quest.status === "completed" && quest.reviewSubmitted && <span className="self-center text-sm text-slate-500">Review submitted</span>}</>}</div>
         </article>;
       })}</div>}
     </section>

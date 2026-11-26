@@ -1,3 +1,4 @@
+import { apiFetch } from "../api";
 import { useState, type FormEvent } from "react";
 import { useAuth } from "../AuthContext";
 import "./SignIn.css";
@@ -64,7 +65,7 @@ export default function SignIn() {
     setError("");
     try {
       const fields = new FormData(event.currentTarget);
-      const response = await fetch("/api/login", {
+      const response = await apiFetch("/api/login", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ kerb: fields.get("kerb"), password: fields.get("password"), remember: fields.get("remember") === "on" }),
       });
@@ -87,7 +88,7 @@ export default function SignIn() {
     setError("");
     try {
       const fields = new FormData(event.currentTarget);
-      const response = await fetch("/api/signup", {
+      const response = await apiFetch("/api/signup", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ kerb: fields.get("kerb"), name: fields.get("name"), password: fields.get("password") }),
       });

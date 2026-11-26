@@ -1,3 +1,4 @@
+import { apiFetch } from "../api";
 import { useEffect, useState } from "react";
 
 type WalletProfile = { preferredPaymentMethod?: string; paymentInstructions?: string; totalConfirmedEarningsCents?: number };
@@ -12,7 +13,7 @@ export default function WalletPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    fetch("/api/profile").then(response => response.ok ? response.json() : null).then((data: WalletProfile | null) => {
+    apiFetch("/api/profile").then(response => response.ok ? response.json() : null).then((data: WalletProfile | null) => {
       if (!data) return;
       if (data.preferredPaymentMethod && METHODS.includes(data.preferredPaymentMethod)) setMethod(data.preferredPaymentMethod);
       setInstructions(data.paymentInstructions ?? "");
@@ -23,7 +24,7 @@ export default function WalletPage() {
   async function savePreference() {
     setBusy(true); setNotice(""); setError("");
     try {
-      const response = await fetch("/api/payment-preference", {
+      const response = await apiFetch("/api/payment-preference", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ method, instructions }),
       });
@@ -34,8 +35,7 @@ export default function WalletPage() {
     finally { setBusy(false); }
   }
 
-  return <main className="min-h-[calc(100dvh-64px)] bg-[#F7F9F9] px-5 py-8 sm:px-8">
-    <section className="mx-auto max-w-4xl">
+  return <div className="mx-auto max-w-4xl">
       <div className="rounded-2xl bg-[#102A3A] p-7 text-white shadow-sm sm:p-9">
         <div><p className="text-lg font-semibold text-white/75 sm:text-xl">Total reward earned</p><p className="mt-1 text-5xl font-extrabold sm:text-6xl">${(totalConfirmedEarningsCents / 100).toFixed(2)}</p></div>
       </div>
@@ -55,6 +55,5 @@ export default function WalletPage() {
       </div>
       <p className="mt-5 max-w-3xl text-sm leading-6 text-slate-600">SideQuest facilitates quest agreements and records each participant’s confirmation. Payment happens directly between students through the selected method or cash. SideQuest does not process, hold, guarantee, verify, insure, recover, or reverse external payments.</p>
       <p className="mt-2 max-w-3xl text-xs leading-5 text-slate-500">After a requester marks payment sent, the completer must confirm receipt before the quest is recorded as completed. These confirmations are self-reported.</p>
-    </section>
-  </main>;
+  </div>;
 }

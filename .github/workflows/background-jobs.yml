@@ -1,0 +1,26 @@
+name: SideQuest background jobs
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  run-background-jobs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Run idempotent SideQuest jobs
+        env:
+          API_URL: ${{ vars.SIDEQUEST_BACKEND_URL }}
+          JOB_SECRET: ${{ secrets.SIDEQUEST_BACKGROUND_JOB_SECRET }}
+        run: |
+          test -n "$API_URL" || { echo "Set the SIDEQUEST_BACKEND_URL repository variable."; exit 1; }
+          test -n "$JOB_SECRET" || { echo "Set the SIDEQUEST_BACKGROUND_JOB_SECRET repository secret."; exit 1; }
+          curl --fail --silent --show-error --max-time 90 \
+            -X POST "$API_URL/api/internal/background-jobs" \
+            -H "Authorization: Bearer $JOB_SECRET" \
+            -H "Content-Type: application/json" \
+            -d '{}'

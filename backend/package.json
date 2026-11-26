@@ -5,13 +5,16 @@
   "scripts": {
     "dev": "node api.js",
     "start": "node api.js",
-    "test": "node --test quest-lifecycle.test.js"
+    "test": "node --test quest-lifecycle.test.js image-upload.test.js review-policy.test.js"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/appdev-at-mit/sidequest.git"
   },
   "author": "",
+  "engines": {
+    "node": ">=22.12.0 <23"
+  },
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/appdev-at-mit/sidequest/issues"
@@ -29,7 +32,9 @@
     "express": "^5.2.1",
     "express-session": "^1.19.0",
     "mongodb": "^7.7.0",
+    "multer": "^2.5.0",
     "passport": "^0.7.0",
-    "passport-local": "^1.0.0"
+    "passport-local": "^1.0.0",
+    "sharp": "^0.35.5"
   }
 }

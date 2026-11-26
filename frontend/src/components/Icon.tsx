@@ -15,6 +15,7 @@ export type IconName =
   | "location"
   | "menu"
   | "minus"
+  | "plus"
   | "moon"
   | "search"
   | "settings"
@@ -59,6 +60,7 @@ export default function Icon({ name, size = 20 }: { name: IconName; size?: numbe
     ),
     menu: <path d="M4 7h16M4 12h16M4 17h16" />,
     minus: <path d="M5 12h14" />,
+    plus: <path d="M12 5v14M5 12h14" />,
     moon: <path d="M21 15.2A9 9 0 1 1 8.8 3 7 7 0 0 0 21 15.2Z" />,
     search: (
       <>

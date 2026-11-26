@@ -1,22 +1,35 @@
 const { MongoClient, ObjectId } = require("mongodb");
 const { canTransition, normalizeQuestStatus, canAccept, cancellationStatus, expirationGraceDeadline, shouldArchiveExpiredQuest } = require("./quest-lifecycle.js");
 const { schemas } = require("./validation.js");
+const { REVIEW_WINDOW_MS, REVIEW_TAGS, reviewStarValue, isPublishedReview, normalizeTags, reviewWindowEnd } = require("./review-policy.js");
+const { moderationMessage } = require("./moderation-policy.js");
 require("dotenv").config();
 
 const uri = process.env.MONGODB_URI;
+const databaseName = process.env.MONGODB_DB_NAME || "sidequest";
+const MAX_USER_IMAGE_STORAGE_BYTES = configuredByteLimit(process.env.MAX_USER_IMAGE_STORAGE_BYTES, 100 * 1024 * 1024, 5 * 1024 * 1024, 2 * 1024 * 1024 * 1024);
+const MAX_GLOBAL_IMAGE_STORAGE_BYTES = configuredByteLimit(process.env.MAX_GLOBAL_IMAGE_STORAGE_BYTES, 5 * 1024 * 1024 * 1024, 50 * 1024 * 1024, 100 * 1024 * 1024 * 1024);
 const ACTIVE_TRANSACTION_STATES = ["in_progress", "pending_review", "awaiting_payment", "payment_sent"];
 const PAYMENT_METHODS = ["Cash", "PayPal", "Venmo", "Cash App", "Zelle", "Other"];
 const DISPUTE_REASONS = ["Requester failed to pay", "Completer failed to complete the quest", "Quest requirements were misrepresented", "Payment amount was incorrect", "Harassment or inappropriate behavior", "Other"];
-const REVIEW_FIELDS = {
-    requester: ["completionQuality", "communication", "reliability"],
-    completer: ["paymentReliability", "descriptionAccuracy", "communication"],
-};
+const REVIEW_REPORT_REASONS = ["Harassment", "Spam", "Inappropriate content", "Other"];
 const USER_REPORT_REASONS = ["Harassment or inappropriate behavior", "Fraud or misleading conduct", "Spam", "Other"];
 
 function actorIdentity(actor) {
     if (actor instanceof ObjectId) return { userId: String(actor), kerb: "" };
     if (actor && typeof actor === "object") return { userId: typeof actor.userId === "string" ? actor.userId : typeof actor.id === "string" ? actor.id : "", kerb: typeof actor.kerb === "string" ? actor.kerb : "" };
     return { userId: "", kerb: typeof actor === "string" ? actor : "" };
+}
+
+function configuredByteLimit(value, fallback, minimum, maximum) {
+    const parsed = Number.parseInt(value ?? "", 10);
+    return Number.isSafeInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
+}
+
+function imageStorageLimitError(message) {
+    const error = new Error(message);
+    error.code = "IMAGE_STORAGE_LIMIT";
+    return error;
 }
 
 function identityClause(actor, idField, kerbField) {
@@ -40,10 +53,11 @@ function sanitizeText(value, maxLength) {
 }
 
 function ratingSummary(reviews = []) {
-    const values = reviews.map(review => Object.values(review.ratings ?? {})).flat().filter(value => Number.isInteger(value) && value >= 1 && value <= 5);
+    const published = reviews.filter(isPublishedReview);
+    const values = published.map(reviewStarValue).filter(value => Number.isInteger(value) && value >= 1 && value <= 5);
     return {
         rating: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null,
-        reviewCount: reviews.length,
+        reviewCount: values.length,
     };
 }
 
@@ -61,9 +75,23 @@ function publicQuest(request, viewer, viewerIsParty) {
     const expiry = requestExpiry(request);
     const status = normalizeQuestStatus(request.status);
     const result = { ...request, status, rewardCents, pay: rewardCents / 100, expiresAt: Number.isFinite(expiry) ? new Date(expiry) : null, expired: status === "expired" || (status === "open" && expiry <= Date.now()), expirationGraceUntil: request.expirationGraceUntil ?? (Number.isFinite(expiry) ? new Date(expirationGraceDeadline(expiry)) : null) };
+    result.moderationStatus = request.moderationStatus ?? "approved";
+    if (viewerIsParty && result.moderationStatus !== "approved") result.moderationMessage = request.moderationMessage ?? moderationMessage(result.moderationStatus);
+    if (result.imageId instanceof ObjectId) result.imageUrl = `/api/images/${result.imageId}`;
+    else delete result.imageUrl;
+    if (result.completionReceipt?.imageId instanceof ObjectId) result.completionReceipt.imageUrl = `/api/images/${result.completionReceipt.imageId}`;
+    else if (result.completionReceipt) delete result.completionReceipt.imageUrl;
     if (result.helperLocation?.updatedAt && new Date(result.helperLocation.updatedAt).getTime() < Date.now() - 2 * 60 * 1000) delete result.helperLocation;
     delete result.idempotencyKey;
     delete result.payloadFingerprint;
+    delete result.reviewSubmissionVersion;
+    delete result.moderationSignals;
+    if (!viewerIsParty) {
+        delete result.moderationPolicyVersion;
+        delete result.moderationCategories;
+        delete result.moderationMessage;
+        delete result.moderationStatus;
+    }
     delete result.requesterId;
     delete result.helperId;
     if (!viewerIsParty) {
@@ -86,21 +114,28 @@ function publicQuest(request, viewer, viewerIsParty) {
 
 class DBController {
     constructor() {
-        this.client = new MongoClient(uri, { family: 4 });
+        if (!uri) throw new Error("MONGODB_URI is required.");
+        this.client = new MongoClient(uri, { family: 4, serverSelectionTimeoutMS: 10000, maxPoolSize: 20, minPoolSize: 0 });
+        this.connectionPromise = null;
     }
 
     async connect() {
-        await this.client.connect();
-        this.db = this.client.db("sidequest");
+        this.connectionPromise ??= this.client.connect();
+        await this.connectionPromise;
+        this.db = this.client.db(databaseName);
         this.requests = this.db.collection("requests");
         this.users = this.db.collection("users");
         this.messages = this.db.collection("messages");
         this.notifications = this.db.collection("notifications");
         this.feedback = this.db.collection("feedback");
         this.reviews = this.db.collection("questReviews");
+        this.reviewReports = this.db.collection("reviewReports");
         this.disputes = this.db.collection("disputes");
         this.reports = this.db.collection("userReports");
         this.adminAudit = this.db.collection("adminAudit");
+        this.questModerationCases = this.db.collection("questModerationCases");
+        this.images = this.db.collection("images");
+        this.imageStorage = this.db.collection("imageStorage");
 
         await this.users.createIndex({ kerb: 1 }, { unique: true });
         await this.users.createIndex({ identityProvider: 1, externalIdentityId: 1 }, { unique: true, partialFilterExpression: { externalIdentityId: { $type: "string" } }, name: "external_identity" });
@@ -111,20 +146,110 @@ class DBController {
         await this.requests.createIndex({ requesterId: 1, idempotencyKey: 1 }, { unique: true, partialFilterExpression: { idempotencyKey: { $type: "string" }, requesterId: { $type: "objectId" } }, name: "request_idempotency_by_user" });
         await this.requests.createIndex({ helper: 1, status: 1 });
         await this.requests.createIndex({ expiresAt: 1, status: 1 });
+        await this.requests.createIndex({ status: 1, completedAt: 1, paymentConfirmedAt: 1 });
         await this.requests.createIndex({ status: 1, expirationGraceUntil: 1, deletedAt: 1 });
         await this.notifications.createIndex({ kerb: 1, createdAt: -1 });
         await this.notifications.createIndex({ userId: 1, createdAt: -1 });
         await this.notifications.createIndex({ dedupeKey: 1 }, { unique: true, partialFilterExpression: { dedupeKey: { $type: "string" } }, name: "notification_dedupe" });
         await this.reviews.createIndex({ questId: 1, reviewer: 1 }, { unique: true });
         await this.reviews.createIndex({ questId: 1, reviewerId: 1 }, { unique: true, partialFilterExpression: { reviewerId: { $type: "objectId" } }, name: "review_once_by_user" });
+        await this.reviews.createIndex({ publicationStatus: 1, targetId: 1, createdAt: -1 });
+        await this.reviewReports.createIndex({ status: 1, createdAt: 1 });
+        await this.reviewReports.createIndex({ reviewId: 1, reporterId: 1 }, { unique: true, partialFilterExpression: { reporterId: { $type: "objectId" } }, name: "review_report_once_by_user" });
         await this.disputes.createIndex({ status: 1, createdAt: 1 });
         await this.reports.createIndex({ status: 1, createdAt: 1 });
+        await this.questModerationCases.createIndex({ status: 1, createdAt: 1 });
+        await this.questModerationCases.createIndex({ questId: 1, createdAt: -1 });
         await this.adminAudit.createIndex({ createdAt: -1 });
+        await this.images.createIndex({ ownerId: 1, createdAt: -1 });
+        await this.images.createIndex({ requestId: 1, purpose: 1 });
+        await this.images.createIndex({ requestId: 1, createdAt: 1 });
+        await this.imageStorage.updateOne({ _id: "global-image-storage" }, { $setOnInsert: { bytes: 0 } }, { upsert: true });
+        await Promise.all([
+            this.requests.updateMany({ imageUrl: /^data:image\//i }, { $unset: { imageUrl: "" } }),
+            this.requests.updateMany({ "completionReceipt.imageUrl": /^data:image\//i }, { $unset: { "completionReceipt.imageUrl": "" } }),
+        ]);
         await this.initializeIdentitySchema();
     }
 
     async close() {
         await this.client.close();
+    }
+
+    async ping() {
+        if (!this.db) throw new Error("Database has not been initialized.");
+        await this.db.command({ ping: 1 }, { maxTimeMS: 3000 });
+        return true;
+    }
+
+    async storeSanitizedImage(owner, purpose, sanitized) {
+        const identity = actorIdentity(owner);
+        if (!schemas.objectId(identity.userId) || !["quest", "completion", "message"].includes(purpose)) throw new Error("Invalid image owner or purpose.");
+        const ownerId = new ObjectId(identity.userId);
+        const imageId = new ObjectId();
+        const now = new Date();
+        const image = {
+            _id: imageId, ownerId, ownerKerb: identity.kerb, purpose, requestId: null,
+            format: sanitized.format, mimeType: sanitized.mimeType, width: sanitized.width,
+            height: sanitized.height, size: sanitized.size, bytes: sanitized.buffer, createdAt: now,
+        };
+        return this.client.withSession(session => session.withTransaction(async () => {
+            const userQuota = await this.users.updateOne({
+                _id: ownerId,
+                $expr: { $lte: [{ $add: [{ $ifNull: ["$imageStorageBytes", 0] }, sanitized.size] }, MAX_USER_IMAGE_STORAGE_BYTES] },
+            }, { $inc: { imageStorageBytes: sanitized.size } }, { session });
+            if (!userQuota.matchedCount) throw imageStorageLimitError("Your saved image storage is full. Remove old images or try a smaller file.");
+            const globalQuota = await this.imageStorage.updateOne({ _id: "global-image-storage", bytes: { $lte: MAX_GLOBAL_IMAGE_STORAGE_BYTES - sanitized.size } }, { $inc: { bytes: sanitized.size } }, { session });
+            if (!globalQuota.matchedCount) throw imageStorageLimitError("SideQuest image storage is temporarily full. Please try again later.");
+            await this.images.insertOne(image, { session });
+            return { id: String(imageId), url: `/api/images/${imageId}`, format: image.format, mimeType: image.mimeType, size: image.size, width: image.width, height: image.height };
+        }));
+    }
+
+    async getOwnedImage(id, owner, purpose) {
+        if (!schemas.objectId(id)) return null;
+        const identity = actorIdentity(owner);
+        return this.images.findOne({ _id: new ObjectId(id), ownerId: new ObjectId(identity.userId), purpose });
+    }
+
+    async getImageForViewer(id, viewer) {
+        if (!schemas.objectId(id)) return null;
+        const image = await this.images.findOne({ _id: new ObjectId(id) });
+        if (!image) return null;
+        const identity = actorIdentity(viewer);
+        const isOwner = image.ownerId && schemas.objectId(identity.userId) && String(image.ownerId) === identity.userId;
+        if (isOwner) return image;
+        const moderatorKerbs = new Set([...(process.env.ADMIN_KERBS ?? "").split(","), ...(process.env.MODERATOR_KERBS ?? "").split(",")].map(value => value.trim()).filter(Boolean));
+        if ((viewer?.roles ?? []).some(role => ["admin", "moderator"].includes(role)) || moderatorKerbs.has(identity.kerb)) {
+            const openCase = await this.questModerationCases.findOne({ questId: image.requestId, status: "open", imageNeedsReview: true });
+            if (openCase && image.purpose === "quest") return image;
+        }
+        if (!image.requestId) return null;
+        const quest = await this.getQuestForViewer(String(image.requestId), viewer);
+        if (!quest) return null;
+        const referenceId = image.purpose === "quest" ? quest.imageId : quest.completionReceipt?.imageId;
+        if (image.purpose === "message") {
+            const linkedMessage = await this.messages.findOne({ requestId: quest._id, imageIds: image._id }, { projection: { _id: 1 } });
+            return linkedMessage ? image : null;
+        }
+        return String(referenceId ?? "") === String(image._id) ? image : null;
+    }
+
+    async cleanupUnattachedImages(now = new Date()) {
+        const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        const oldImages = await this.images.find({ requestId: null, createdAt: { $lt: cutoff } }, { projection: { _id: 1, ownerId: 1, size: 1 } }).limit(100).toArray();
+        let removed = 0;
+        for (const image of oldImages) {
+            const deleted = await this.client.withSession(session => session.withTransaction(async () => {
+                const result = await this.images.deleteOne({ _id: image._id, requestId: null }, { session });
+                if (!result.deletedCount) return false;
+                await this.users.updateOne({ _id: image.ownerId }, { $inc: { imageStorageBytes: -image.size } }, { session });
+                await this.imageStorage.updateOne({ _id: "global-image-storage" }, { $inc: { bytes: -image.size } }, { session });
+                return true;
+            }));
+            if (deleted) removed += 1;
+        }
+        return removed;
     }
 
     async initializeIdentitySchema() {
@@ -191,6 +316,7 @@ class DBController {
         for (const request of found) {
             const status = normalizeQuestStatus(request.status);
             const party = viewer && (matchesIdentity(request, viewer, "requesterId", "requester") || matchesIdentity(request, viewer, "helperId", "helper"));
+            if (!party && (request.moderationStatus ?? "approved") !== "approved") continue;
             if (status !== "open" && !party) continue;
             if (status === "open" && requestExpiry(request) <= Date.now()) continue;
             if (!party && viewer && request.requester && await this.isBlockedEitherWay(viewer, { userId: request.requesterId ? String(request.requesterId) : "", kerb: request.requester })) continue;
@@ -214,14 +340,27 @@ class DBController {
                 const document = {
                     ...request,
                     requesterId: user._id,
+                    ...(request.imageId ? { imageId: new ObjectId(request.imageId) } : {}),
                     pay: rewardCents / 100,
                     helper: null,
                     status: "open",
+                    moderationStatus: request.moderationStatus ?? "approved",
+                    moderationPolicyVersion: request.moderationPolicyVersion ?? null,
+                    moderationCategories: request.moderationCategories ?? [],
+                    moderationSignals: request.moderationSignals ?? [],
+                    moderationMessage: request.moderationStatus === "pending_review" ? moderationMessage("pending_review") : null,
                     createdAt: now,
                     expiresAt: new Date(Date.parse(request.end)),
                     statusHistory: [{ from: null, to: "open", by: request.requester, at: now }],
                 };
                 const { insertedId } = await this.requests.insertOne(document, { session });
+                if (document.moderationStatus === "pending_review") {
+                    await this.questModerationCases.insertOne({ questId: insertedId, requesterId: user._id, requester: request.requester, status: "open", policyVersion: document.moderationPolicyVersion, categories: document.moderationCategories, signals: document.moderationSignals, imageNeedsReview: Boolean(request.imageId), createdAt: now, resolvedAt: null }, { session });
+                }
+                if (request.imageId) {
+                    const attached = await this.images.updateOne({ _id: new ObjectId(request.imageId), ownerId: user._id, purpose: "quest", requestId: null }, { $set: { requestId: insertedId } }, { session });
+                    if (!attached.modifiedCount) throw new Error("The quest image is no longer available.");
+                }
                 return { ...document, _id: insertedId };
             }));
         } catch (error) {
@@ -238,7 +377,7 @@ class DBController {
         const status = normalizeQuestStatus(quest?.status);
         const wasExpired = status === "expired" || (status === "open" && requestExpiry(quest) <= now);
         const withinGrace = wasExpired && (quest.expirationGraceUntil ? new Date(quest.expirationGraceUntil).getTime() : expirationGraceDeadline(requestExpiry(quest))) > now;
-        if (!quest || !((status === "open" && !wasExpired) || (withinGrace && !quest.helper))) return null;
+        if (!quest || quest.moderationStatus === "pending_review" || !((status === "open" && !wasExpired) || (withinGrace && !quest.helper))) return null;
         const filter = { $and: [{ _id: quest._id, deletedAt: null, status: quest.status }, identityClause(requester, "requesterId", "requester")] };
         if (quest.end != null) filter.end = quest.end;
         else if (quest.expiresAt) filter.expiresAt = quest.expiresAt;
@@ -249,7 +388,17 @@ class DBController {
             update.$unset = { expiredAt: "", expirationGraceUntil: "", archivedAt: "" };
             update.$push = { statusHistory: { from: "expired", to: "open", by: actorKerb(requester), byId: schemas.objectId(actorIdentity(requester).userId) ? new ObjectId(actorIdentity(requester).userId) : null, reason: "requester_extended_deadline", at: new Date() } };
         }
-        return this.requests.findOneAndUpdate(filter, update, { returnDocument: "after" });
+        if (changes.moderationStatus === "approved") update.$set.moderationMessage = null;
+        return this.client.withSession(session => session.withTransaction(async () => {
+            const saved = await this.requests.findOneAndUpdate(filter, update, { returnDocument: "after", session });
+            if (saved && changes.moderationStatus === "pending_review") {
+                await this.questModerationCases.updateMany({ questId: quest._id, status: "open" }, { $set: { status: "superseded", resolvedAt: new Date() } }, { session });
+                await this.questModerationCases.insertOne({ questId: quest._id, requesterId: quest.requesterId, requester: quest.requester, status: "open", policyVersion: changes.moderationPolicyVersion, categories: changes.moderationCategories ?? [], signals: changes.moderationSignals ?? [], imageNeedsReview: false, createdAt: new Date(), resolvedAt: null }, { session });
+            } else if (saved && changes.moderationStatus === "approved") {
+                await this.questModerationCases.updateMany({ questId: quest._id, status: "open" }, { $set: { status: "superseded", resolvedAt: new Date() } }, { session });
+            }
+            return saved;
+        }));
     }
 
     async extendExpiredQuest(id, requester, end) {
@@ -267,7 +416,7 @@ class DBController {
         const requestId = new ObjectId(id);
         const candidate = await this.requests.findOne({ _id: requestId, deletedAt: null });
             const now = new Date();
-            if (!candidate || (candidate.requester === helperKerb && (!candidate.requesterId || String(candidate.requesterId) === helperId)) || !canAccept(candidate.status, requestExpiry(candidate), now.getTime())) return null;
+        if (!candidate || (candidate.moderationStatus ?? "approved") !== "approved" || (candidate.requester === helperKerb && (!candidate.requesterId || String(candidate.requesterId) === helperId)) || !canAccept(candidate.status, requestExpiry(candidate), now.getTime())) return null;
         const result = await this.client.withSession(session => session.withTransaction(async () => {
             const helperSelector = schemas.objectId(helperId) ? { _id: new ObjectId(helperId) } : { kerb: helperKerb };
             const helperUser = await this.users.findOneAndUpdate(helperSelector, { $inc: { questActivityVersion: 1 } }, { session, returnDocument: "after" });
@@ -275,7 +424,7 @@ class DBController {
             if (candidate.requesterId && String(candidate.requesterId) === String(helperUser._id)) return null;
             if (await this.isBlockedEitherWay({ userId: candidate.requesterId ? String(candidate.requesterId) : "", kerb: candidate.requester }, { userId: String(helperUser._id), kerb: helperKerb }, session)) return null;
             const acceptanceTime = new Date();
-            const filter = { _id: requestId, helper: null, deletedAt: null };
+            const filter = { _id: requestId, helper: null, deletedAt: null, moderationStatus: { $in: ["approved", null] } };
             if (candidate.end != null) filter.end = { $gt: acceptanceTime.toISOString() };
             if (candidate.expiresAt) filter.expiresAt = { $gt: acceptanceTime };
             if (candidate.end == null && !candidate.expiresAt && candidate.createdAt) filter.createdAt = candidate.createdAt;
@@ -392,17 +541,30 @@ class DBController {
         return updated;
     }
 
-    async submitRequesterCompletion(id, requester, evidence, imageUrl) {
+    async submitRequesterCompletion(id, requester, evidence, imageId) {
         const now = new Date();
-        const quest = await this.requests.findOne({ $and: [{ _id: new ObjectId(id), deletedAt: null }, identityClause(requester, "requesterId", "requester")] });
-        if (!quest || normalizeQuestStatus(quest.status) !== "in_progress") return null;
-        return this.requests.findOneAndUpdate(
-            { $and: [{ _id: quest._id, status: quest.status, deletedAt: null }, identityClause(requester, "requesterId", "requester")] },
-            { $set: { status: "awaiting_payment", completionReceipt: { evidence, imageUrl, submittedAt: now, submittedById: quest.requesterId ?? null }, requesterApprovedAt: now, requesterApprovedById: quest.requesterId ?? null },
-                $unset: { helperLocation: "" },
-                $push: { statusHistory: { from: "in_progress", to: "awaiting_payment", by: actorKerb(requester), at: now } } },
-            { returnDocument: "after" }
-        );
+        return this.client.withSession(session => session.withTransaction(async () => {
+            const quest = await this.requests.findOne({ $and: [{ _id: new ObjectId(id), deletedAt: null }, identityClause(requester, "requesterId", "requester")] }, { session });
+            if (!quest || normalizeQuestStatus(quest.status) !== "in_progress") return null;
+            const identity = actorIdentity(requester);
+            const receipt = { evidence, submittedAt: now, submittedById: quest.requesterId ?? null };
+            if (imageId) {
+                const image = await this.images.findOne({ _id: new ObjectId(imageId), ownerId: new ObjectId(identity.userId), purpose: "completion", requestId: null }, { session, projection: { _id: 1 } });
+                if (!image) return null;
+                receipt.imageId = image._id;
+                const attached = await this.images.updateOne({ _id: image._id, requestId: null }, { $set: { requestId: quest._id } }, { session });
+                if (!attached.modifiedCount) return null;
+            }
+            const updated = await this.requests.findOneAndUpdate(
+                { $and: [{ _id: quest._id, status: quest.status, deletedAt: null }, identityClause(requester, "requesterId", "requester")] },
+                { $set: { status: "awaiting_payment", completionReceipt: receipt, requesterApprovedAt: now, requesterApprovedById: quest.requesterId ?? null },
+                    $unset: { helperLocation: "" },
+                    $push: { statusHistory: { from: "in_progress", to: "awaiting_payment", by: actorKerb(requester), at: now } } },
+                { returnDocument: "after", session }
+            );
+            if (!updated && imageId) await this.images.updateOne({ _id: new ObjectId(imageId), requestId: quest._id }, { $set: { requestId: null } }, { session });
+            return updated;
+        }));
     }
 
     async approveCompletion(id, requester) {
@@ -450,8 +612,11 @@ class DBController {
         if (!canTransition(status, "cancelled") && !(isHelper && status === "in_progress")) return null;
         const now = new Date();
         const identity = actorIdentity(actor);
-        const helperHasDoneWork = (quest.questStage ?? 0) > 0 || Boolean(quest.completionSubmission || quest.completionReceipt)
-            || (quest.progressHistory ?? []).length > 0;
+        // Progress markers only indicate the helper started moving through the
+        // workflow. If they cancel before the deadline, the requester should
+        // be able to find another helper. Submitted completion evidence remains
+        // a protected state and is not reopened automatically.
+        const helperHasDoneWork = Boolean(quest.completionSubmission || quest.completionReceipt);
         const paymentObligationExists = Boolean(quest.paymentSentAt || quest.paymentConfirmedAt || quest.requesterApprovedAt || ["pending_review", "awaiting_payment", "payment_sent"].includes(status));
         const deadline = requestExpiry(quest);
         const disposition = cancellationStatus({ isAcceptor: isHelper, status, deadline, now: now.getTime(), hasWork: helperHasDoneWork, hasObligation: paymentObligationExists, hasDispute: Boolean(quest.disputeOpenedAt) });
@@ -520,19 +685,58 @@ class DBController {
         }));
     }
 
-    async submitReview(id, reviewer, ratings, text) {
-        const quest = await this.requests.findOne({ _id: new ObjectId(id), paymentConfirmedAt: { $type: "date" }, deletedAt: null });
-        if (!quest || normalizeQuestStatus(quest.status) !== "completed") return null;
-        const reviewerIsRequester = matchesIdentity(quest, reviewer, "requesterId", "requester");
-        const reviewerIsHelper = matchesIdentity(quest, reviewer, "helperId", "helper");
-        if (!quest || (!reviewerIsRequester && !reviewerIsHelper) || String(quest.requesterId ?? quest.requester) === String(quest.helperId ?? quest.helper)) return null;
-        const target = reviewerIsRequester ? quest.helper : quest.requester;
-        const targetId = reviewerIsRequester ? quest.helperId : quest.requesterId;
-        const expected = REVIEW_FIELDS[reviewerIsRequester ? "requester" : "completer"];
-        if (!target || !expected.every(field => Number.isInteger(ratings?.[field]) && ratings[field] >= 1 && ratings[field] <= 5)) return null;
-        const review = { questId: quest._id, reviewer: actorKerb(reviewer), reviewerId: reviewerIsRequester ? quest.requesterId : quest.helperId, target, targetId, role: reviewerIsRequester ? "requester" : "completer", ratings: Object.fromEntries(expected.map(key => [key, ratings[key]])), text, createdAt: new Date() };
-        const { insertedId } = await this.reviews.insertOne(review);
-        return { ...review, _id: insertedId };
+    async submitReview(id, reviewer, rating, tags, text) {
+        if (!schemas.objectId(id) || !Number.isInteger(rating) || rating < 1 || rating > 5) return null;
+        const initialQuest = await this.requests.findOne({ _id: new ObjectId(id), deletedAt: null });
+        if (!initialQuest || normalizeQuestStatus(initialQuest.status) !== "completed" || !initialQuest.paymentConfirmedAt) return null;
+        const reviewerIsRequester = matchesIdentity(initialQuest, reviewer, "requesterId", "requester");
+        const reviewerIsHelper = matchesIdentity(initialQuest, reviewer, "helperId", "helper");
+        if (!reviewerIsRequester && !reviewerIsHelper) return null;
+        const reviewerRole = reviewerIsRequester ? "requester" : "acceptor";
+        const normalizedTags = normalizeTags(reviewerRole, tags);
+        if (!normalizedTags || typeof text !== "string" || text.length > 500) return null;
+        const cleanText = sanitizeText(text, 500);
+        const reviewerKerb = reviewerIsRequester ? initialQuest.requester : initialQuest.helper;
+        const reviewerId = reviewerIsRequester ? initialQuest.requesterId : initialQuest.helperId;
+        const target = reviewerIsRequester ? initialQuest.helper : initialQuest.requester;
+        const targetId = reviewerIsRequester ? initialQuest.helperId : initialQuest.requesterId;
+        if (!target || (reviewerId && targetId && String(reviewerId) === String(targetId)) || reviewerKerb === target) return null;
+        const now = new Date();
+        const deadline = reviewWindowEnd(initialQuest);
+        const review = {
+            questId: initialQuest._id, reviewer: reviewerKerb, reviewerId: reviewerId ?? null,
+            target, targetId: targetId ?? null, reviewerRole, reviewedUserRole: reviewerIsRequester ? "acceptor" : "requester",
+            role: reviewerRole, rating, tags: normalizedTags, text: cleanText,
+            createdAt: now, submittedAt: now, publicationStatus: "pending", moderationStatus: "visible",
+            reviewWindowEndsAt: deadline == null ? null : new Date(deadline),
+        };
+        const result = await this.client.withSession(session => session.withTransaction(async () => {
+            // Serialize the two submissions through the quest document so concurrent reviews
+            // cannot both miss the other's pending review.
+            const locked = await this.requests.findOneAndUpdate({ _id: initialQuest._id, status: "completed", paymentConfirmedAt: { $type: "date" }, deletedAt: null }, { $inc: { reviewSubmissionVersion: 1 } }, { session, returnDocument: "after" });
+            const quest = locked?.value ?? locked;
+            if (!quest) return null;
+            const reviewerClause = reviewerId ? { $or: [{ reviewerId }, { reviewerId: null, reviewer: reviewerKerb }] } : { reviewer: reviewerKerb };
+            const already = await this.reviews.findOne({ questId: quest._id, ...reviewerClause }, { session });
+            if (already) return { duplicate: true };
+            const otherReviewer = reviewerIsRequester ? quest.helperId : quest.requesterId;
+            const otherKerb = reviewerIsRequester ? quest.helper : quest.requester;
+            const otherQuery = otherReviewer ? { $or: [{ reviewerId: otherReviewer }, { reviewerId: null, reviewer: otherKerb }] } : { reviewer: otherKerb, reviewerId: null };
+            const otherReview = await this.reviews.findOne({ questId: quest._id, ...otherQuery, publicationStatus: { $in: ["pending", "published", null] } }, { session });
+            const publishNow = Boolean(otherReview || (deadline != null && now.getTime() >= deadline));
+            if (publishNow) {
+                review.publicationStatus = "published";
+                review.publishedAt = now;
+                if (otherReview) await this.reviews.updateOne({ _id: otherReview._id, publicationStatus: "pending" }, { $set: { publicationStatus: "published", publishedAt: now } }, { session });
+            }
+            const { insertedId } = await this.reviews.insertOne(review, { session });
+            return { ...review, _id: insertedId, duplicate: false };
+        }));
+        if (result?.publicationStatus === "published") {
+            const parties = [[initialQuest.requester, initialQuest.requesterId], [initialQuest.helper, initialQuest.helperId]];
+            void Promise.all(parties.filter(([kerb]) => kerb).map(([kerb, userId]) => this.addNotificationOnce(userId ? { kerb, userId: String(userId) } : kerb, { type: "review_published", title: "Quest reviews are now public", message: `Reviews for “${initialQuest.title ?? initialQuest.description}” are now visible.`, requestId: String(initialQuest._id) }, `review-published:${initialQuest._id}:${String(userId ?? kerb)}`))).catch(error => console.error("Could not queue published review notifications:", error.name));
+        }
+        return result;
     }
 
     async hasReviewed(id, reviewer) {
@@ -543,11 +747,55 @@ class DBController {
         return Boolean(await this.reviews.findOne({ $and: [{ questId: new ObjectId(id) }, reviewerQuery] }, { projection: { _id: 1 } }));
     }
 
+    async reviewStatus(id, reviewer) {
+        const identity = actorIdentity(reviewer);
+        const quest = await this.requests.findOne({ _id: new ObjectId(id), deletedAt: null });
+        const eligible = Boolean(quest && normalizeQuestStatus(quest.status) === "completed" && quest.paymentConfirmedAt && (matchesIdentity(quest, reviewer, "requesterId", "requester") || matchesIdentity(quest, reviewer, "helperId", "helper")));
+        return { eligible, reviewed: eligible ? await this.hasReviewed(id, reviewer) : false, reviewWindowEndsAt: quest ? reviewWindowEnd(quest) : null };
+    }
+
+    async publishDueReviews(now = new Date()) {
+        const due = await this.reviews.find({ publicationStatus: "pending", reviewWindowEndsAt: { $lte: now } }).toArray();
+        let published = 0;
+        for (const review of due) {
+            const result = await this.reviews.updateOne({ _id: review._id, publicationStatus: "pending" }, { $set: { publicationStatus: "published", publishedAt: now } });
+            published += result.modifiedCount;
+            if (result.modifiedCount) {
+                const quest = await this.requests.findOne({ _id: review.questId }, { projection: { title: 1, description: 1, requester: 1, requesterId: 1, helper: 1, helperId: 1 } });
+                if (quest) for (const [kerb, userId] of [[quest.requester, quest.requesterId], [quest.helper, quest.helperId]]) {
+                    if (kerb) await this.addNotificationOnce(userId ? { kerb, userId: String(userId) } : kerb, { type: "review_published", title: "A quest review is now public", message: `A review for “${quest.title ?? quest.description}” is now visible.`, requestId: String(quest._id) }, `review-published:${review.questId}:${String(userId ?? kerb)}`);
+                }
+            }
+        }
+        return published;
+    }
+
+    async dueReviewReminders(now = new Date()) {
+        const reminderWindowEnd = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+        const completionWindowStart = new Date(now.getTime() - REVIEW_WINDOW_MS);
+        const completionWindowEnd = new Date(completionWindowStart.getTime() + 24 * 60 * 60 * 1000);
+        const quests = await this.requests.find({ status: "completed", deletedAt: null, $or: [
+            { completedAt: { $gte: completionWindowStart, $lte: completionWindowEnd } },
+            { completedAt: { $in: [null] }, paymentConfirmedAt: { $gte: completionWindowStart, $lte: completionWindowEnd } },
+        ] }).toArray();
+        let sent = 0;
+        for (const quest of quests) {
+            const deadline = reviewWindowEnd(quest);
+            if (deadline == null || deadline < now.getTime() || deadline > reminderWindowEnd.getTime()) continue;
+            for (const [kerb, userId] of [[quest.requester, quest.requesterId], [quest.helper, quest.helperId]]) {
+                if (!kerb || await this.hasReviewed(String(quest._id), userId ? { userId: String(userId), kerb } : kerb)) continue;
+                const result = await this.addNotificationOnce(userId ? { userId: String(userId), kerb } : kerb, { type: "review_reminder", title: "Share your quest experience", message: `Your review window for “${quest.title ?? quest.description}” closes within 24 hours.`, requestId: String(quest._id) }, `review-reminder:${quest._id}:${String(userId ?? kerb)}`);
+                if (result) sent += 1;
+            }
+        }
+        return sent;
+    }
+
     async publicReviews(actor) {
         const identity = actorIdentity(actor);
         const hasId = schemas.objectId(identity.userId);
-        const reviews = await this.reviews.find({ $or: [...(hasId ? [{ targetId: new ObjectId(identity.userId) }] : []), ...(identity.kerb ? [{ target: identity.kerb }] : [])] }).sort({ createdAt: -1 }).limit(50).toArray();
-        return reviews.map(({ _id, questId, role, ratings, text, createdAt }) => ({ id: String(_id), questId: String(questId), role, ratings, text, createdAt }));
+        const reviews = await this.reviews.find({ $and: [{ publicationStatus: { $in: ["published", null] } }, { moderationStatus: { $nin: ["hidden", "removed"] } }, { $or: [...(hasId ? [{ targetId: new ObjectId(identity.userId) }] : []), ...(identity.kerb ? [{ target: identity.kerb }] : [])] }] }).sort({ createdAt: -1 }).limit(50).toArray();
+        return reviews.map(({ _id, questId, role, reviewerRole, reviewedUserRole, rating, ratings, tags, text, createdAt }) => ({ id: String(_id), questId: String(questId), role: reviewerRole ?? role, reviewedUserRole: reviewedUserRole ?? (role === "completer" ? "acceptor" : "requester"), rating: reviewStarValue({ rating, ratings }), tags: tags ?? [], text, createdAt }));
     }
 
     async createUserReport(reporter, subject, reason, description, evidence) {
@@ -621,11 +869,65 @@ class DBController {
     }
 
     async adminQueue() {
-        const [disputes, reports] = await Promise.all([
+        const [disputes, reports, reviewReports, questModerationCases] = await Promise.all([
             this.disputes.find({ status: "open" }).sort({ createdAt: 1 }).limit(100).toArray(),
             this.reports.find({ status: "open" }).sort({ createdAt: 1 }).limit(100).toArray(),
+            this.reviewReports.find({ status: "open" }).sort({ createdAt: 1 }).limit(100).toArray(),
+            this.questModerationCases.find({ status: "open" }).sort({ createdAt: 1 }).limit(100).toArray(),
         ]);
-        return { disputes, reports };
+        const enrichedReviewReports = await Promise.all(reviewReports.map(async report => ({ ...report, review: await this.reviews.findOne({ _id: report.reviewId }) })));
+        const enrichedQuestCases = await Promise.all(questModerationCases.map(async item => {
+            const quest = await this.requests.findOne({ _id: item.questId, deletedAt: null });
+            const requester = await this.users.findOne({ _id: item.requesterId }, { projection: { name: 1 } });
+            return { ...item, quest: quest ? { _id: String(quest._id), title: quest.title, description: quest.description, category: quest.category, pay: quest.pay, pickup: quest.pickup, dropoff: quest.dropoff, imageUrl: quest.imageId ? `/api/images/${quest.imageId}` : null } : null, requesterName: requester?.name ?? item.requester };
+        }));
+        return { disputes, reports, reviewReports: enrichedReviewReports, questModeration: enrichedQuestCases };
+    }
+
+    async resolveQuestModeration(caseId, moderator, action, decision) {
+        const identity = actorIdentity(moderator);
+        const moderatorId = schemas.objectId(identity.userId) ? new ObjectId(identity.userId) : null;
+        return this.client.withSession(session => session.withTransaction(async () => {
+            const item = await this.questModerationCases.findOne({ _id: new ObjectId(caseId), status: "open" }, { session });
+            if (!item || !["approve", "reject"].includes(action)) return null;
+            const now = new Date();
+            const moderationStatus = action === "approve" ? "approved" : "rejected";
+            const updated = await this.requests.updateOne({ _id: item.questId, moderationStatus: "pending_review", deletedAt: null }, { $set: { moderationStatus, moderationMessage: action === "approve" ? null : `${moderationMessage("rejected")} Moderator note: ${decision}`, moderatedAt: now, moderatedBy: identity.kerb, moderationDecision: decision } }, { session });
+            if (!updated.modifiedCount) return null;
+            await this.questModerationCases.updateOne({ _id: item._id, status: "open" }, { $set: { status: "reviewed", action, decision, resolvedAt: now, resolvedBy: identity.kerb, ...(moderatorId ? { resolvedById: moderatorId } : {}) } }, { session });
+            await this.adminAudit.insertOne({ admin: identity.kerb, ...(moderatorId ? { adminId: moderatorId } : {}), action: `quest_${action}`, targetId: item.questId, moderationCaseId: item._id, policyVersion: item.policyVersion, categories: item.categories, note: decision, createdAt: now }, { session });
+            return { requester: item.requester, requesterId: item.requesterId ? String(item.requesterId) : "", questId: String(item.questId), moderationStatus };
+        }));
+    }
+
+    async createReviewReport(reporter, reviewId, reason, description) {
+        const identity = actorIdentity(reporter);
+        const review = await this.reviews.findOne({ _id: new ObjectId(reviewId), publicationStatus: { $in: ["published", null] }, moderationStatus: { $nin: ["hidden", "removed"] } });
+        if (!review || matchesIdentity(review, reporter, "reviewerId", "reviewer")) return null;
+        const report = { reviewId: review._id, questId: review.questId, reporter: identity.kerb, reporterId: schemas.objectId(identity.userId) ? new ObjectId(identity.userId) : null, reason, description, status: "open", createdAt: new Date(), resolvedAt: null };
+        const { insertedId } = await this.reviewReports.insertOne(report);
+        return { ...report, _id: insertedId };
+    }
+
+    async resolveReviewReport(reportId, admin, action, decision) {
+        const adminKerb = actorKerb(admin);
+        const identity = actorIdentity(admin);
+        const adminId = schemas.objectId(identity.userId) ? new ObjectId(identity.userId) : null;
+        return this.client.withSession(session => session.withTransaction(async () => {
+            const report = await this.reviewReports.findOne({ _id: new ObjectId(reportId), status: "open" }, { session });
+            if (!report || !["hide", "keep"].includes(action)) return null;
+            const now = new Date();
+            if (action === "hide") await this.reviews.updateOne({ _id: report.reviewId }, { $set: { moderationStatus: "hidden", moderatedAt: now, moderatedBy: adminKerb } }, { session });
+            await this.reviewReports.updateOne({ _id: report._id, status: "open" }, { $set: { status: "reviewed", decision, action, resolvedAt: now, resolvedBy: adminKerb, ...(adminId ? { resolvedById: adminId } : {}) } }, { session });
+            await this.adminAudit.insertOne({ admin: adminKerb, ...(adminId ? { adminId } : {}), action: `review_report_${action}`, reportId: report._id, reviewId: report.reviewId, decision, createdAt: now }, { session });
+            return { reviewId: String(report.reviewId), action };
+        }));
+    }
+
+    async hasReviewReported(reviewId, reporter) {
+        const identity = actorIdentity(reporter);
+        const query = schemas.objectId(identity.userId) ? { reporterId: new ObjectId(identity.userId) } : { reporter: identity.kerb };
+        return Boolean(await this.reviewReports.findOne({ reviewId: new ObjectId(reviewId), ...query }, { projection: { _id: 1 } }));
     }
 
     async resolveUserReport(reportId, admin, decision) {
@@ -686,7 +988,7 @@ class DBController {
 
     async getMyQuests(actor) {
         const quests = await this.requests.find({ $or: [identityClause(actor, "requesterId", "requester"), identityClause(actor, "helperId", "helper")], deletedAt: null }).sort({ createdAt: -1 }).toArray();
-        return quests.map(quest => publicQuest(quest, actorKerb(actor), true));
+        return Promise.all(quests.map(async quest => ({ ...publicQuest(quest, actorKerb(actor), true), reviewSubmitted: normalizeQuestStatus(quest.status) === "completed" ? await this.hasReviewed(String(quest._id), actor) : false })));
     }
 
     async getRequestById(id) { return this.requests.findOne({ _id: new ObjectId(id), deletedAt: null }); }
@@ -695,6 +997,7 @@ class DBController {
         const quest = await this.getRequestById(id);
         if (!quest) return null;
         const party = matchesIdentity(quest, viewer, "requesterId", "requester") || matchesIdentity(quest, viewer, "helperId", "helper");
+        if (!party && (quest.moderationStatus ?? "approved") !== "approved") return null;
         const viewerKerb = actorKerb(viewer);
         const openAndAvailable = normalizeQuestStatus(quest.status) === "open" && requestExpiry(quest) > Date.now();
         if (!party && !openAndAvailable) return null;
@@ -718,11 +1021,24 @@ class DBController {
         return this.messages.find(filter).sort({ createdAt: 1 }).limit(100).toArray();
     }
 
-    async addQuestMessage(requestId, sender, text) {
+    async addQuestMessage(requestId, sender, text, imageIds = []) {
         const identity = actorIdentity(sender);
-        const message = { requestId: new ObjectId(requestId), sender: identity.kerb, senderId: schemas.objectId(identity.userId) ? new ObjectId(identity.userId) : null, text, createdAt: new Date() };
-        const { insertedId } = await this.messages.insertOne(message);
-        return { ...message, _id: insertedId };
+        if (!schemas.objectId(requestId) || !schemas.objectId(identity.userId) || !Array.isArray(imageIds) || imageIds.length > 3
+            || imageIds.some(id => !schemas.objectId(id)) || new Set(imageIds).size !== imageIds.length) throw new Error("Invalid message attachment.");
+        const requestObjectId = new ObjectId(requestId);
+        const ownerId = new ObjectId(identity.userId);
+        const imageObjectIds = imageIds.map(id => new ObjectId(id));
+        const message = { requestId: requestObjectId, sender: identity.kerb, senderId: ownerId, text, imageIds: imageObjectIds, createdAt: new Date() };
+        return this.client.withSession(session => session.withTransaction(async () => {
+            if (imageObjectIds.length) {
+                const ownedImages = await this.images.find({ _id: { $in: imageObjectIds }, ownerId, purpose: "message", requestId: null }, { session, projection: { _id: 1 } }).toArray();
+                if (ownedImages.length !== imageObjectIds.length) throw new Error("One or more message photos are no longer available. Please attach them again.");
+                const attached = await this.images.updateMany({ _id: { $in: imageObjectIds }, ownerId, purpose: "message", requestId: null }, { $set: { requestId: requestObjectId } }, { session });
+                if (attached.modifiedCount !== imageObjectIds.length) throw new Error("One or more message photos could not be attached. Please try again.");
+            }
+            const { insertedId } = await this.messages.insertOne(message, { session });
+            return { ...message, _id: insertedId };
+        }));
     }
 
     async addNotification(recipient, notification) {
@@ -740,14 +1056,17 @@ class DBController {
         const user = !identity.userId && identity.kerb ? await this.users.findOne({ kerb: identity.kerb }, { projection: { _id: 1 } }) : null;
         const userId = identity.userId || (user?._id ? String(user._id) : "");
         if (!schemas.objectId(userId) && !identity.kerb) return;
-        try { await this.notifications.updateOne({ dedupeKey }, { $setOnInsert: {
+        try {
+            const result = await this.notifications.updateOne({ dedupeKey }, { $setOnInsert: {
             dedupeKey,
             kerb: identity.kerb || undefined,
             userId: schemas.objectId(userId) ? new ObjectId(userId) : null,
             ...notification,
             readAt: null,
             createdAt: new Date(),
-        } }, { upsert: true }); }
+            } }, { upsert: true });
+            return result.upsertedCount === 1;
+        }
         catch (error) { if (error?.code !== 11000) throw error; }
     }
 
@@ -781,14 +1100,20 @@ class DBController {
         const [user, quests, reviews] = await Promise.all([
             this.users.findOne(userSelector, { projection: { password: 0, blocked: 0, blockedUserIds: 0, paymentInstructions: 0, hasReviewed: 0, hasGottenReviewed: 0 } }),
             this.requests.find({ $or: [...(hasId ? [{ requesterId: new ObjectId(identity.userId) }, { helperId: new ObjectId(identity.userId) }] : []), ...(kerb ? [{ requester: kerb }, { helper: kerb }] : [])] }, { projection: { requester: 1, helper: 1, requesterId: 1, helperId: 1, status: 1, rewardCents: 1, pay: 1, paymentSentAt: 1, paymentConfirmedAt: 1, completedAt: 1, deletedAt: 1 } }).toArray(),
-            this.reviews.find({ $or: [...(hasId ? [{ targetId: new ObjectId(identity.userId) }] : []), ...(kerb ? [{ target: kerb }] : [])] }, { projection: { ratings: 1, text: 1, role: 1, createdAt: 1, questId: 1 } }).sort({ createdAt: -1 }).toArray(),
+            this.reviews.find({ $and: [{ publicationStatus: { $in: ["published", null] } }, { moderationStatus: { $nin: ["hidden", "removed"] } }, { $or: [...(hasId ? [{ targetId: new ObjectId(identity.userId) }] : []), ...(kerb ? [{ target: kerb }] : [])] }] }, { projection: { rating: 1, ratings: 1, tags: 1, text: 1, role: 1, reviewerRole: 1, reviewedUserRole: 1, createdAt: 1, questId: 1 } }).sort({ createdAt: -1 }).toArray(),
         ]);
         if (!user) return null;
         const owns = (quest, role) => hasId && quest[`${role}Id`] ? String(quest[`${role}Id`]) === identity.userId : Boolean(kerb && quest[role] === kerb);
         const confirmed = quests.filter(quest => owns(quest, "helper") && normalizeQuestStatus(quest.status) === "completed" && quest.paymentConfirmedAt);
+        const completedQuests = quests.filter(quest => normalizeQuestStatus(quest.status) === "completed" && quest.paymentConfirmedAt && (owns(quest, "requester") || owns(quest, "helper")));
         const paymentSent = quests.filter(quest => owns(quest, "requester") && quest.paymentSentAt);
         const totalRewardCents = confirmed.reduce((sum, quest) => sum + (Number.isSafeInteger(quest.rewardCents) ? quest.rewardCents : Math.round(Number(quest.pay ?? 0) * 100)), 0);
         const summary = ratingSummary(reviews);
+        const roleSummary = role => ratingSummary(reviews.filter(review => (review.reviewedUserRole ?? (review.role === "completer" ? "acceptor" : "requester")) === role));
+        const tagCounts = {};
+        for (const review of reviews.filter(isPublishedReview)) for (const tag of review.tags ?? []) tagCounts[tag] = (tagCounts[tag] ?? 0) + 1;
+        const roleRatings = { asRequester: roleSummary("requester"), asAcceptor: roleSummary("acceptor") };
+        const recentReviews = reviews.filter(isPublishedReview).map(review => ({ ...review, role: review.reviewerRole ?? review.role, reviewedUserRole: review.reviewedUserRole ?? (review.role === "completer" ? "acceptor" : "requester"), rating: reviewStarValue(review), tags: review.tags ?? [] }));
         return {
             userId: String(user._id), kerb: user.kerb, name: user.name, createdAt: user.createdAt ?? null,
             identityVerificationStatus: user.identityProvider === "mit-touchstone" && user.externalIdentityId && user.verifiedUniversityIdentityId && user.identityVerificationStatus === "verified" ? "verified" : "unverified",
@@ -798,12 +1123,15 @@ class DBController {
                 paymentInstructions: user.paymentInstructions ?? "",
             } : {}),
             postedQuests: quests.filter(quest => owns(quest, "requester") && !quest.deletedAt).length,
-            completedQuests: confirmed.length,
+            completedQuests: completedQuests.length,
             confirmedPayments: paymentSent.filter(quest => normalizeQuestStatus(quest.status) === "completed" && quest.paymentConfirmedAt).length,
             paymentConfirmationRate: paymentSent.length ? Math.round(paymentSent.filter(quest => normalizeQuestStatus(quest.status) === "completed" && quest.paymentConfirmedAt).length * 100 / paymentSent.length) : null,
             totalConfirmedEarningsCents: totalRewardCents,
             ...summary,
-            reviews,
+            ratingAsRequester: roleRatings.asRequester.rating, reviewsAsRequester: roleRatings.asRequester.reviewCount,
+            ratingAsAcceptor: roleRatings.asAcceptor.rating, reviewsAsAcceptor: roleRatings.asAcceptor.reviewCount,
+            frequentTags: Object.entries(tagCounts).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([tag, count]) => ({ tag, count })),
+            reviews: recentReviews,
         };
     }
 
@@ -872,7 +1200,9 @@ class DBController {
         return { recommendations, pastAcceptors };
     }
 
-    static get REVIEW_FIELDS() { return REVIEW_FIELDS; }
+    static get REVIEW_TAGS() { return REVIEW_TAGS; }
+    static get REVIEW_REPORT_REASONS() { return REVIEW_REPORT_REASONS; }
+    static get REVIEW_REPORT_ACTIONS() { return ["hide", "keep"]; }
     static get PAYMENT_METHODS() { return PAYMENT_METHODS; }
     static get DISPUTE_REASONS() { return DISPUTE_REASONS; }
     static get USER_REPORT_REASONS() { return USER_REPORT_REASONS; }

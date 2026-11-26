@@ -7,24 +7,52 @@ import argon2 from "argon2";
 import dotenv from "dotenv";
 import MongoStore from "connect-mongo";
 import path from "path";
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import locationService from "./location-service.js";
 import auth from "./auth.js";
 import inputValidation from "./validation.js";
+import { MAX_MESSAGE_IMAGES, receiveImage, sanitizeImage } from "./image-upload.js";
+import moderationPolicy from "./moderation-policy.js";
 dotenv.config();
 
-if (typeof process.env.SECRET !== "string" || process.env.SECRET.length < 32) {
-    throw new Error("SECRET must contain at least 32 characters before the API can start.");
+const sessionSecret = process.env.SESSION_SECRET || process.env.SECRET;
+if (typeof sessionSecret !== "string" || sessionSecret.length < 32) {
+    throw new Error("SESSION_SECRET (or legacy SECRET) must contain at least 32 characters before the API can start.");
 }
 
 const app = express();
 const production = process.env.NODE_ENV === "production";
+const port = Number.parseInt(process.env.PORT ?? "3000", 10);
+const databaseName = process.env.MONGODB_DB_NAME || "sidequest";
+const db = new DBController();
+const mongoClientPromise = db.connectionPromise ?? (db.connectionPromise = db.client.connect());
+const sessionStore = MongoStore.create({
+    clientPromise: mongoClientPromise,
+    dbName: databaseName,
+    collectionName: "sessions",
+    ttl: 30 * 24 * 60 * 60,
+});
 const sessionCookie = { httpOnly: true, sameSite: "lax", secure: production, path: "/" };
 const rememberDuration = 30 * 24 * 60 * 60 * 1000;
 const { attachAuthenticatedUser, requireAuthentication, isQuestParticipant } = auth;
 const { schemas, parseReward } = inputValidation;
 
 app.disable("x-powered-by");
+app.set("trust proxy", production ? 1 : false);
+app.get("/health/live", (_req, res) => res.status(200).json({ status: "ok" }));
+app.get("/health/ready", async (_req, res) => {
+    const missingConfiguration = [];
+    if (!process.env.MONGODB_URI) missingConfiguration.push("MONGODB_URI");
+    if (!sessionSecret) missingConfiguration.push("SESSION_SECRET");
+    if (production && !(process.env.APP_BASE_URL || process.env.FRONTEND_URL || process.env.FRONTEND_ORIGIN)) missingConfiguration.push("APP_BASE_URL");
+    if (production && !process.env.BACKGROUND_JOB_SECRET) missingConfiguration.push("BACKGROUND_JOB_SECRET");
+    let database = "unavailable";
+    try { await db.ping(); database = "connected"; } catch { /* Keep diagnostics safe and concise. */ }
+    let sessionStorage = "unavailable";
+    try { await new Promise((resolve, reject) => sessionStore.get("__sidequest_readiness_probe__", error => error ? reject(error) : resolve())); sessionStorage = "ready"; } catch { /* Avoid leaking database diagnostics. */ }
+    const ready = database === "connected" && sessionStorage === "ready" && missingConfiguration.length === 0;
+    res.status(ready ? 200 : 503).json({ status: ready ? "ready" : "not_ready", checks: { database, sessionStore: sessionStorage, backgroundJobs: production ? (process.env.BACKGROUND_JOB_SECRET ? "configured" : "not_configured") : "local_interval" }, missingConfiguration });
+});
 app.use((_req, res, next) => {
     res.set("X-Content-Type-Options", "nosniff");
     res.set("X-Frame-Options", "DENY");
@@ -34,7 +62,7 @@ app.use((_req, res, next) => {
     next();
 });
 
-app.use(express.json({ limit: "8mb" }));
+app.use(express.json({ limit: "256kb" }));
 const writeRateLimits = new Map();
 function rateLimited(req, res, bucket, maxHits, windowMs = 60000) {
     const now = Date.now();
@@ -52,8 +80,9 @@ function rateLimited(req, res, bucket, maxHits, windowMs = 60000) {
 app.use("/api", (req, res, next) => {
     res.set("Cache-Control", "no-store");
     if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
+        if (req.method === "POST" && req.path === "/internal/background-jobs" && backgroundJobAuthorized(req)) return next();
         const allowedOrigins = new Set();
-        for (const value of [process.env.APP_BASE_URL, process.env.FRONTEND_ORIGIN]) {
+        for (const value of [process.env.APP_BASE_URL, process.env.FRONTEND_URL, process.env.FRONTEND_ORIGIN]) {
             try { if (value) allowedOrigins.add(new URL(value).origin); } catch { /* Invalid configuration is ignored. */ }
         }
         if (!production) for (const value of ["http://localhost:5174", "http://127.0.0.1:5174", "http://localhost:3000", "http://127.0.0.1:3000"]) allowedOrigins.add(value);
@@ -71,14 +100,11 @@ app.use("/api", (req, res, next) => {
     next();
 });
 app.use(session({
-    secret: process.env.SECRET,
+    secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
     cookie: sessionCookie,
-    store: MongoStore.create({
-        mongoUrl: process.env.MONGODB_URI,
-        ttl: 30 * 24 * 60 * 60
-    })
+    store: sessionStore,
 }));
 app.use(passport.initialize());
 app.use(passport.session());
@@ -86,6 +112,7 @@ app.use("/api", attachAuthenticatedUser);
 app.use("/api", (req, res, next) => {
     const publicRoute = (req.method === "GET" && ["/auth-status", "/admin/status"].includes(req.path))
         || (req.method === "POST" && ["/login", "/signup"].includes(req.path))
+        || (req.method === "POST" && req.path === "/internal/background-jobs")
         || (req.method === "DELETE" && req.path === "/logout");
     return publicRoute ? next() : requireAuthentication(req, res, next);
 });
@@ -118,18 +145,30 @@ passport.deserializeUser(async (identityId, done) => {
         return done(e);
     }
 })
-const db = new DBController();
 const { sanitizeText } = DBController;
 let dummyPasswordHash;
+
+function backgroundJobAuthorized(req) {
+    const secret = process.env.BACKGROUND_JOB_SECRET;
+    const supplied = req.get("authorization") ?? "";
+    const expected = secret ? `Bearer ${secret}` : "";
+    const suppliedBuffer = Buffer.from(supplied);
+    const expectedBuffer = Buffer.from(expected);
+    return Boolean(secret && suppliedBuffer.length === expectedBuffer.length && timingSafeEqual(suppliedBuffer, expectedBuffer));
+}
 
 function adminKerbs() {
     return new Set((process.env.ADMIN_KERBS ?? "").split(",").map(value => value.trim()).filter(Boolean));
 }
 
+function moderatorKerbs() {
+    return new Set([...(process.env.MODERATOR_KERBS ?? "").split(","), ...adminKerbs()].map(value => value.trim()).filter(Boolean));
+}
+
 function requireAdmin(req, res) {
     if (!req.auth) return false; // Authentication is enforced by the API middleware.
-    if (!req.auth.roles.includes("admin") && !adminKerbs().has(req.auth.kerb)) {
-        res.status(403).json({ msg: "Administrator access is required." });
+    if (!req.auth.roles.some(role => ["admin", "moderator"].includes(role)) && !moderatorKerbs().has(req.auth.kerb)) {
+        res.status(403).json({ msg: "Moderator access is required." });
         return false;
     }
     return true;
@@ -165,11 +204,24 @@ function summarizeQuestTitle(description) {
         .then(result => {
             if (result.newlyExpired) console.log(`Expired ${result.newlyExpired} quest(s) past their deadline.`);
             if (result.archived) console.log(`Archived ${result.archived} expired quest(s) after their grace period.`);
+            return result;
+        })
+        .then(async result => {
+            const published = await db.publishDueReviews();
+            const reminders = await db.dueReviewReminders();
+            if (published) console.log(`Published ${published} quest review(s) after the blind review window.`);
+            if (reminders) console.log(`Sent ${reminders} quest review reminder(s).`);
+            const removed = await db.cleanupUnattachedImages();
+            if (removed) console.log(`Removed ${removed} unattached image(s).`);
+            return result;
         })
         .catch(error => console.error("Quest lifecycle reconciliation failed:", error.name));
     void reconcileQuestLifecycle();
-    const questCleanupTimer = setInterval(() => { void reconcileQuestLifecycle(); }, 60 * 1000);
-    questCleanupTimer.unref();
+    let questCleanupTimer = null;
+    if (!production) {
+        questCleanupTimer = setInterval(() => { void reconcileQuestLifecycle(); }, 60 * 1000);
+        questCleanupTimer.unref();
+    }
 
     app.get("/api/auth-status", (req, res) => {
         res.json({
@@ -178,6 +230,57 @@ function summarizeQuestTitle(description) {
             kerb: req.user?.kerb ?? "",
             identityVerificationStatus: req.auth?.identityVerificationStatus ?? "unverified",
         });
+    });
+
+    app.post("/api/internal/background-jobs", async (req, res, next) => {
+        if (!process.env.BACKGROUND_JOB_SECRET) return res.status(503).json({ msg: "Background job authentication is not configured." });
+        if (!backgroundJobAuthorized(req)) return res.status(401).json({ msg: "Unauthorized." });
+        try {
+            const lifecycle = await db.reconcileQuestLifecycle();
+            const publishedReviews = await db.publishDueReviews();
+            const reviewReminders = await db.dueReviewReminders();
+            const removedImages = await db.cleanupUnattachedImages();
+            return res.json({ status: "completed", lifecycle, publishedReviews, reviewReminders, removedImages });
+        } catch (error) { return next(error); }
+    });
+
+    app.post("/api/images", (req, res, next) => {
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
+        if (rateLimited(req, res, "image-upload", 12, 10 * 60 * 1000)) return;
+        const purpose = req.query.purpose;
+        if (!["quest", "completion", "message"].includes(purpose)) return res.status(400).json({ msg: "Choose a valid image purpose." });
+        receiveImage(req, res, async () => {
+            try {
+                if (!req.file) return res.status(400).json({ msg: "Choose an image to upload." });
+                const sanitized = await sanitizeImage(req.file);
+                const stored = await db.storeSanitizedImage(req.auth, purpose, sanitized);
+                return res.status(201).json({ data: stored });
+            } catch (error) {
+                if (error?.statusCode) return res.status(error.statusCode).json({ msg: error.message });
+                if (error?.code === "IMAGE_STORAGE_LIMIT") return res.status(413).json({ msg: error.message });
+                return next(error);
+            }
+        });
+    });
+
+    app.get("/api/images/:id", async (req, res, next) => {
+        if (!req.isAuthenticated()) return res.status(401).end();
+        if (!schemas.objectId(req.params.id)) return res.status(404).end();
+        try {
+            const image = await db.getImageForViewer(req.params.id, req.auth);
+            if (!image) return res.status(404).end();
+            const bytes = Buffer.isBuffer(image.bytes) ? image.bytes : Buffer.from(image.bytes?.value?.(true) ?? []);
+            if (!bytes.length) return res.status(404).end();
+            res.set({
+                "Content-Type": "image/webp",
+                "Content-Length": String(bytes.length),
+                "Content-Disposition": `inline; filename="${image._id}.webp"`,
+                "X-Content-Type-Options": "nosniff",
+                "Cross-Origin-Resource-Policy": "same-origin",
+                "Cache-Control": "private, no-store",
+            });
+            return res.send(bytes);
+        } catch (error) { return next(error); }
     });
 
 
@@ -212,9 +315,9 @@ function summarizeQuestTitle(description) {
         const startMs = schemas.isoDateTime(questStart) ? Date.parse(questStart) : NaN;
         const endMs = schemas.isoDateTime(end) ? Date.parse(end) : NaN;
         if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || !(endMs > startMs) || endMs <= Date.now()) return res.status(400).json({ result: "fail", msg: "Choose a future deadline." });
-        const imageUrl = typeof body.imageUrl === "string" ? body.imageUrl : "";
-        const validPhoto = imageUrl.length <= 7_000_000 && (!imageUrl || /^data:image\/(?:png|jpe?g|webp|gif);base64,[A-Za-z0-9+/]+=*$/i.test(imageUrl));
-        if (!validPhoto) return res.status(400).json({ result: "fail", msg: "Choose an image under 5 MB in PNG, JPEG, WebP, or GIF format." });
+        if (Object.prototype.hasOwnProperty.call(body, "imageUrl")) return res.status(400).json({ msg: "Upload the quest image first, then submit its image ID." });
+        const imageId = body.imageId == null || body.imageId === "" ? "" : String(body.imageId);
+        if (imageId && (!schemas.objectId(imageId) || !await db.getOwnedImage(imageId, req.auth, "quest"))) return res.status(400).json({ msg: "Upload a valid quest image before posting." });
 
         let suspended, pickupResult, dropoffResult;
         try {
@@ -255,10 +358,16 @@ function summarizeQuestTitle(description) {
             dropoffLocation,
             lat: pickupLocation.lat,
             lng: pickupLocation.lng,
-            imageUrl,
+            ...(imageId ? { imageId } : {}),
             idempotencyKey,
-            payloadFingerprint: createHash("sha256").update(JSON.stringify({ cleanDescription, category, rewardCents, paymentMethod, startMs, endMs, pickupLocation, dropoffLocation, imageUrl })).digest("hex"),
+            payloadFingerprint: createHash("sha256").update(JSON.stringify({ cleanDescription, category, rewardCents, paymentMethod, startMs, endMs, pickupLocation, dropoffLocation, imageId })).digest("hex"),
         };
+        const screening = moderationPolicy.screenQuest({ title: payload.title, description: payload.description, category, pickup: payload.pickup, dropoff: payload.dropoff, hasImage: Boolean(imageId) });
+        if (screening.action === "reject") return res.status(422).json({ msg: "This quest request conflicts with SideQuest’s safety policy. Edit the request to remove the prohibited activity.", categories: screening.categories });
+        payload.moderationStatus = screening.action === "review" ? "pending_review" : "approved";
+        payload.moderationPolicyVersion = screening.policyVersion;
+        payload.moderationCategories = screening.categories;
+        payload.moderationSignals = screening.signals.map(({ id, category: signalCategory, confidence }) => ({ id, category: signalCategory, confidence }));
         let request;
         try { request = await db.postRequest(payload); }
         catch (error) { return next(error); }
@@ -266,7 +375,7 @@ function summarizeQuestTitle(description) {
         if (!request) return res.status(403).json({ result: "fail", msg: "Your account is suspended and cannot post quests." });
         const created = request.data ?? request;
         const { idempotencyKey: _idempotencyKey, payloadFingerprint: _payloadFingerprint, requesterId: _requesterId, helperId: _helperId, ...publicRequest } = created;
-        return res.status(request.duplicate ? 200 : 201).json({ result: "success", msg: "Created quest", data: publicRequest });
+        return res.status(request.duplicate ? 200 : 201).json({ result: "success", msg: publicRequest.moderationStatus === "pending_review" ? "Quest submitted for moderator review" : "Created quest", data: publicRequest });
     });
 
     app.put("/api/requests/:id", async (req, res, next) => {
@@ -285,9 +394,16 @@ function summarizeQuestTitle(description) {
         if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || !(endMs > startMs) || endMs <= Date.now()) return res.status(400).json({ msg: "Choose a future deadline after the start time." });
         try {
             const cleanDescription = sanitizeText(description, 150);
+            const currentQuest = await db.getRequestById(req.params.id);
+            if (!currentQuest || !isQuestParticipant(currentQuest, req.auth)) return res.status(404).json({ msg: "Quest not found." });
+            const screening = moderationPolicy.screenQuest({ title: summarizeQuestTitle(cleanDescription), description: cleanDescription, category, pickup: currentQuest.pickup, dropoff: currentQuest.dropoff, hasImage: false });
+            if (screening.action === "reject") return res.status(422).json({ msg: "This quest request conflicts with SideQuest’s safety policy. Edit the request to remove the prohibited activity.", categories: screening.categories });
             const request = await db.updateOpenRequest(req.params.id, req.auth, {
                 description: cleanDescription, title: summarizeQuestTitle(cleanDescription), category,
                 rewardCents, pay, start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString(), expiresAt: new Date(endMs),
+                moderationStatus: screening.action === "review" ? "pending_review" : "approved",
+                moderationPolicyVersion: screening.policyVersion, moderationCategories: screening.categories,
+                moderationSignals: screening.signals.map(({ id, category: signalCategory, confidence }) => ({ id, category: signalCategory, confidence })),
             });
             if (!request) return res.status(409).json({ msg: "This quest can no longer be edited, or its 24-hour extension window has ended." });
             res.json({ result: "success", data: request });
@@ -450,8 +566,8 @@ function summarizeQuestTitle(description) {
                 db.getLeaderboard(null),
             ]);
             if (!profile) return res.status(404).json({ msg: "Profile not found." });
-            const { kerb, name, createdAt, identityVerificationStatus, postedQuests, completedQuests, confirmedPayments, paymentConfirmationRate, totalConfirmedEarningsCents, rating, reviewCount, reviews, preferredPaymentMethod, paymentInstructions, moderationStatus, strikes } = profile;
-            res.json({ kerb, name, createdAt, rank: leaderboard.findIndex(user => user.kerb === kerb) + 1, identityVerificationStatus, postedQuests, completedQuests, confirmedPayments, paymentConfirmationRate, totalConfirmedEarningsCents, rating, reviewCount, ...(req.params.kerb === req.user.kerb ? { preferredPaymentMethod, paymentInstructions, moderationStatus, strikes, reviews } : { reviews: await db.publicReviews(profile.userId) }) });
+            const { kerb, name, createdAt, identityVerificationStatus, postedQuests, completedQuests, confirmedPayments, paymentConfirmationRate, totalConfirmedEarningsCents, rating, reviewCount, ratingAsRequester, reviewsAsRequester, ratingAsAcceptor, reviewsAsAcceptor, frequentTags, reviews, preferredPaymentMethod, paymentInstructions, moderationStatus, strikes } = profile;
+            res.json({ kerb, name, createdAt, rank: leaderboard.findIndex(user => user.kerb === kerb) + 1, identityVerificationStatus, postedQuests, completedQuests, confirmedPayments, paymentConfirmationRate, totalConfirmedEarningsCents, rating, reviewCount, ratingAsRequester, reviewsAsRequester, ratingAsAcceptor, reviewsAsAcceptor, frequentTags, ...(req.params.kerb === req.user.kerb ? { preferredPaymentMethod, paymentInstructions, moderationStatus, strikes, reviews } : { reviews: await db.publicReviews(profile.userId) }) });
         } catch (error) { next(error); }
     });
 
@@ -477,13 +593,28 @@ function summarizeQuestTitle(description) {
     });
 
     app.get("/api/admin/status", (req, res) => {
-        res.json({ isAdmin: Boolean(req.auth && (req.auth.roles.includes("admin") || adminKerbs().has(req.auth.kerb))) });
+        res.json({ isAdmin: Boolean(req.auth && (req.auth.roles.some(role => ["admin", "moderator"].includes(role)) || moderatorKerbs().has(req.auth.kerb))) });
     });
 
     app.get("/api/admin/queue", async (req, res, next) => {
         if (!requireAdmin(req, res)) return;
         try { res.json(await db.adminQueue()); }
         catch (error) { next(error); }
+    });
+
+    app.post("/api/admin/quest-moderation/:id/resolve", async (req, res, next) => {
+        if (rateLimited(req, res, "admin-quest-moderation", 30)) return;
+        if (!requireAdmin(req, res)) return;
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid moderation case ID." });
+        const { action, decision } = req.body ?? {};
+        const cleanDecision = sanitizeText(decision, 2000);
+        if (!["approve", "reject"].includes(action) || !cleanDecision) return res.status(400).json({ msg: "Choose approve or reject and record a moderation reason." });
+        try {
+            const result = await db.resolveQuestModeration(req.params.id, req.auth, action, cleanDecision);
+            if (!result) return res.status(409).json({ msg: "This moderation case has already been resolved or the quest is no longer pending." });
+            void db.addNotificationOnce(result.requesterId ? { userId: result.requesterId, kerb: result.requester } : result.requester, { type: "quest_moderation", title: action === "approve" ? "Quest approved" : "Quest needs changes", message: action === "approve" ? "Your quest passed moderator review and is now visible." : `Your quest was not approved. ${cleanDecision}`, requestId: result.questId }, `quest-moderation:${result.questId}:${result.moderationStatus}`).catch(error => console.error("Could not queue moderation notification:", error.name));
+            return res.json({ result: "success" });
+        } catch (error) { next(error); }
     });
 
     app.post("/api/admin/disputes/:id/resolve", async (req, res, next) => {
@@ -510,6 +641,20 @@ function summarizeQuestTitle(description) {
             const report = await db.resolveUserReport(req.params.id, req.auth, decision);
             if (!report) return res.status(409).json({ msg: "This report was already reviewed." });
             res.json({ result: "success" });
+        } catch (error) { next(error); }
+    });
+
+    app.post("/api/admin/review-reports/:id/resolve", async (req, res, next) => {
+        if (rateLimited(req, res, "admin-review-report", 30)) return;
+        if (!requireAdmin(req, res)) return;
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid review report ID." });
+        const { action } = req.body ?? {};
+        const decision = sanitizeText(req.body?.decision, 2000);
+        if (!DBController.REVIEW_REPORT_ACTIONS.includes(action) || !decision) return res.status(400).json({ msg: "Choose an action and record an administrative decision." });
+        try {
+            const result = await db.resolveReviewReport(req.params.id, req.auth, action, decision);
+            if (!result) return res.status(409).json({ msg: "This review report is no longer open." });
+            res.json({ result: "success", data: result });
         } catch (error) { next(error); }
     });
 
@@ -590,25 +735,29 @@ function summarizeQuestTitle(description) {
             if (!request?.helper || !isQuestParticipant(request, req.auth)) return res.status(403).json({ msg: "Chat is available after a quest has been accepted, to the requester and assigned completer." });
             if (await db.isBlockedEitherWay({ userId: request.requesterId ? String(request.requesterId) : "", kerb: request.requester }, { userId: request.helperId ? String(request.helperId) : "", kerb: request.helper })) return res.status(403).json({ msg: "Messaging is unavailable between these users." });
             const messages = await db.getQuestMessages(req.params.id, typeof req.query.since === "string" ? req.query.since : null);
-            res.json({ data: messages.map(message => ({ sender: message.sender, text: message.text, createdAt: message.createdAt, own: message.senderId ? String(message.senderId) === req.auth.userId : message.sender === req.user.kerb })) });
+            res.json({ data: messages.map(message => ({ sender: message.sender, text: message.text, images: (message.imageIds ?? []).map(imageId => `/api/images/${imageId}`), createdAt: message.createdAt, own: message.senderId ? String(message.senderId) === req.auth.userId : message.sender === req.user.kerb })) });
         } catch (error) { next(error); }
     });
 
     app.post("/api/requests/:id/messages", async (req, res, next) => {
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
         if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid request ID" });
+        if (rateLimited(req, res, "quest-message", 60, 60 * 1000)) return;
         const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
-        if (!schemas.boundedText(text, 2000)) return res.status(400).json({ msg: "Enter a message under 2,000 characters." });
+        const imageIds = req.body?.imageIds ?? [];
+        if ((text && !schemas.boundedText(text, 2000)) || (!text && (!Array.isArray(imageIds) || imageIds.length === 0))
+            || !Array.isArray(imageIds) || imageIds.length > MAX_MESSAGE_IMAGES || imageIds.some(id => !schemas.objectId(id))
+            || new Set(imageIds).size !== imageIds.length) return res.status(400).json({ msg: `Enter a message under 2,000 characters or attach up to ${MAX_MESSAGE_IMAGES} photos.` });
         try {
             const request = await db.getRequestById(req.params.id);
             if (!request?.helper || !isQuestParticipant(request, req.auth)) return res.status(403).json({ msg: "Chat is available after a quest has been accepted, to the requester and assigned completer." });
             if (await db.isBlockedEitherWay({ userId: request.requesterId ? String(request.requesterId) : "", kerb: request.requester }, { userId: request.helperId ? String(request.helperId) : "", kerb: request.helper })) return res.status(403).json({ msg: "Messaging is unavailable between these users." });
-            const message = await db.addQuestMessage(req.params.id, req.auth, text);
+            const message = await db.addQuestMessage(req.params.id, req.auth, text, imageIds);
             const recipient = request.requester === req.user.kerb ? request.helper : request.requester;
             if (recipient) await db.addNotification(recipient, {
-                type: "message", title: `Message from ${req.user.name || req.user.kerb}`, message: text.slice(0, 180), requestId: req.params.id,
+                type: "message", title: `Message from ${req.user.name || req.user.kerb}`, message: (text || "Sent a photo.").slice(0, 180), requestId: req.params.id,
             });
-            res.status(201).json({ data: { sender: message.sender, text: message.text, createdAt: message.createdAt, own: true } });
+            res.status(201).json({ data: { sender: message.sender, text: message.text, images: (message.imageIds ?? []).map(imageId => `/api/images/${imageId}`), createdAt: message.createdAt, own: true } });
         } catch (error) { next(error); }
     });
 
@@ -756,13 +905,15 @@ function summarizeQuestTitle(description) {
         if (rateLimited(req, res, "quest-completion", 15)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
         if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
-        const evidence = sanitizeText(req.body?.evidence, 4000);
-        const imageUrl = typeof req.body?.imageUrl === "string" ? req.body.imageUrl : "";
-        const validPhoto = imageUrl.length <= 7_000_000 && (!imageUrl || /^data:image\/(?:png|jpe?g|webp|gif);base64,[A-Za-z0-9+/]+=*$/i.test(imageUrl));
-        if (!validPhoto) return res.status(400).json({ msg: "Choose a PNG, JPEG, WebP, or GIF receipt image under 5 MB." });
-        if (!evidence && !imageUrl) return res.status(400).json({ msg: "Upload a receipt image or add completion notes." });
+        const rawEvidence = req.body?.evidence;
+        if (typeof rawEvidence !== "string" || rawEvidence.length > 150 || !rawEvidence.trim()) return res.status(400).json({ msg: "Describe the completed work in 150 characters or fewer." });
+        const evidence = sanitizeText(rawEvidence, 150);
+        if (Object.prototype.hasOwnProperty.call(req.body ?? {}, "imageUrl")) return res.status(400).json({ msg: "Upload the receipt image first, then submit its image ID." });
+        const imageId = req.body?.imageId == null || req.body.imageId === "" ? "" : String(req.body.imageId);
+        if (imageId && (!schemas.objectId(imageId) || !await db.getOwnedImage(imageId, req.auth, "completion"))) return res.status(400).json({ msg: "Upload a valid receipt image before submitting completion." });
+        if (!evidence) return res.status(400).json({ msg: "Describe the completed work in 150 characters or fewer." });
         try {
-            const quest = await db.submitRequesterCompletion(req.params.id, req.auth, evidence, imageUrl);
+            const quest = await db.submitRequesterCompletion(req.params.id, req.auth, evidence, imageId);
             if (!quest) return res.status(409).json({ msg: "Only the requester can mark an in-progress quest complete." });
             await db.addNotification(quest.helper, { type: "awaiting_payment", title: "Quest marked complete", message: `The requester marked “${quest.title ?? quest.description}” complete. Arrange the external reward payment.`, requestId: req.params.id });
             res.json({ result: "success", status: quest.status });
@@ -800,7 +951,10 @@ function summarizeQuestTitle(description) {
         try {
             const quest = await db.confirmPaymentReceived(req.params.id, req.auth);
             if (!quest) return res.status(409).json({ msg: "Only the assigned completer can confirm receipt after payment was marked sent." });
-            await db.addNotification(quest.requester, { type: "completed", title: "Payment receipt confirmed", message: `The completer confirmed receiving the external reward for “${quest.title ?? quest.description}”.`, requestId: req.params.id });
+            void Promise.all([
+                db.addNotificationOnce(quest.requesterId ? { kerb: quest.requester, userId: String(quest.requesterId) } : quest.requester, { type: "completed", title: "Payment receipt confirmed", message: `The completer confirmed receiving the external reward for “${quest.title ?? quest.description}”. You can now leave a review.`, requestId: req.params.id }, `review-eligible:${req.params.id}:${String(quest.requesterId ?? quest.requester)}`),
+                db.addNotificationOnce(quest.helperId ? { kerb: quest.helper, userId: String(quest.helperId) } : quest.helper, { type: "review_eligible", title: "Share your quest experience", message: `Your quest “${quest.title ?? quest.description}” is complete. You can leave a review.`, requestId: req.params.id }, `review-eligible:${req.params.id}:${String(quest.helperId ?? quest.helper)}`),
+            ]).catch(error => console.error("Could not queue review eligibility notifications:", error.name));
             res.json({ result: "success", status: quest.status, selfReportedByCompleter: true });
         } catch (error) { next(error); }
     });
@@ -826,13 +980,14 @@ function summarizeQuestTitle(description) {
         if (rateLimited(req, res, "quest-review", 20)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
         if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
-        const ratings = req.body?.ratings;
-        const text = sanitizeText(req.body?.text, 1000);
-        if (!ratings || typeof ratings !== "object" || Array.isArray(ratings) || Object.values(ratings).some(value => !Number.isInteger(value) || value < 1 || value > 5)) return res.status(400).json({ msg: "Use a 1–5 star rating for each category." });
+        const { rating, tags } = req.body ?? {};
+        const text = req.body?.text ?? "";
+        if (!Number.isInteger(rating) || rating < 1 || rating > 5 || typeof text !== "string" || text.length > 500 || !Array.isArray(tags) || tags.some(tag => typeof tag !== "string")) return res.status(400).json({ msg: "Choose a 1–5 star rating, valid tags, and a review under 500 characters." });
         try {
-            const review = await db.submitReview(req.params.id, req.auth, ratings, text);
-            if (!review) return res.status(403).json({ msg: "Reviews are available to the two participants after payment receipt is confirmed." });
-            res.status(201).json({ result: "success", data: { id: String(review._id), createdAt: review.createdAt } });
+            const review = await db.submitReview(req.params.id, req.auth, rating, tags, text);
+            if (!review) return res.status(403).json({ msg: "Reviews are available only to the two participants after payment receipt is confirmed." });
+            if (review.duplicate) return res.status(409).json({ msg: "You have already reviewed this quest." });
+            res.status(201).json({ result: "success", data: { id: String(review._id), createdAt: review.createdAt, published: review.publicationStatus === "published" } });
         } catch (error) {
             if (error.code === 11000) return res.status(409).json({ msg: "You have already reviewed this quest." });
             next(error);
@@ -845,8 +1000,22 @@ function summarizeQuestTitle(description) {
         try {
             const quest = await db.getRequestById(req.params.id);
             if (!quest || ![quest.requester, quest.helper].includes(req.user.kerb)) return res.status(403).json({ msg: "Only quest participants can view review status." });
-            res.json({ reviewed: await db.hasReviewed(req.params.id, req.auth) });
+            res.json(await db.reviewStatus(req.params.id, req.auth));
         } catch (error) { next(error); }
+    });
+
+    app.post("/api/reviews/:id/reports", async (req, res, next) => {
+        if (rateLimited(req, res, "review-report", 10, 60 * 60 * 1000)) return;
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid review ID." });
+        const { reason } = req.body ?? {};
+        const description = sanitizeText(req.body?.description, 1000);
+        if (!DBController.REVIEW_REPORT_REASONS.includes(reason) || !description) return res.status(400).json({ msg: "Choose a report reason and describe the concern." });
+        try {
+            const report = await db.createReviewReport(req.auth, req.params.id, reason, description);
+            if (!report) return res.status(403).json({ msg: "You cannot report your own review or a review that is not publicly visible." });
+            res.status(201).json({ result: "success", msg: "Review report submitted for moderator review." });
+        } catch (error) { if (error.code === 11000) return res.status(409).json({ msg: "You have already reported this review." }); next(error); }
     });
 
     app.post("/api/user-reports", async (req, res, next) => {
@@ -882,13 +1051,13 @@ function summarizeQuestTitle(description) {
         res.status(500).json({ result: "fail", msg: "The server could not complete the request." });
     });
 
-    const server = app.listen(3000);
+    const server = app.listen(port);
     let shuttingDown = false;
     const shutdown = signal => {
         if (shuttingDown) return;
         shuttingDown = true;
         console.log(`Received ${signal}; closing the API and MongoDB connection.`);
-        clearInterval(questCleanupTimer);
+        if (questCleanupTimer) clearInterval(questCleanupTimer);
         server.close(async error => {
             if (error) {
                 console.error("API shutdown failed:", error.name);

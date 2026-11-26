@@ -1,8 +1,19 @@
-<<<<<<< HEAD
+# Dependencies and generated build output
 node_modules/
-=======
+**/node_modules/
+dist/
+dist-ssr/
+
+# Local environment files and secrets (commit only the .env.example templates)
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
 # Logs
-logs
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -10,19 +21,14 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
-*.local
-
-# Editor directories and files
+# Editor and operating-system files
 .vscode/*
 !.vscode/extensions.json
-.idea
+.idea/
 .DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
->>>>>>> origin/real-project
+*.local

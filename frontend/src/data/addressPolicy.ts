@@ -27,7 +27,8 @@ export function addressPolicyError(address: string, instructions = ""): string |
 }
 
 export function resolveMITBuildingQuery(value: string): { query: string; isBuilding: boolean; error: string | null } {
-  const match = value.trim().match(/^(?:MIT\s+)?building\s+#?([A-Z]{1,2}\d{1,3}|\d{1,3})(?:\s+(?:and\s+)?(?:building\s*#?)?([A-Z]{1,2}\d{1,3}|\d{1,3}))?(?:\s*,?\s*(?:room|rm\.?)\s*#?[A-Z0-9-]+)?$/i);
+  const buildingId = "[A-Z]{1,2}\\d{1,3}[A-Z]?|\\d{1,3}";
+  const match = value.trim().match(new RegExp(`^(?:MIT\\s+)?(?:(?:building|bldg\\.?)\\s*#?\\s*)?(${buildingId})(?:\\s+(?:and\\s+)?(?:(?:building|bldg\\.?)\\s*#?\\s*)?(${buildingId}))?(?:\\s*,?\\s*(?:room|rm\\.?)\\s*#?[A-Z0-9-]+)?$`, "i"));
   if (!match) return { query: value.trim(), isBuilding: false, error: null };
   const buildingIds = [match[1], match[2]].filter((id): id is string => Boolean(id));
   const invalidNumber = buildingIds.some(id => /^\d+$/.test(id) && (Number(id) < 1 || Number(id) > 76));
@@ -40,12 +41,13 @@ export function resolveMITBuildingQuery(value: string): { query: string; isBuild
  * a result whose own feature name explicitly identifies the requested building. */
 export function isMatchingMITBuilding(name: string | undefined, query: string): boolean {
   if (!name) return false;
-  const requested = query.trim().match(/^(?:(?:MIT\s+)?building\s+#?)?([A-Z]{1,2}\d{1,3}|\d{1,3})/i)?.[1];
+  const requested = query.trim().match(/^(?:(?:MIT\s+)?(?:(?:building|bldg\.?)\s*#?\s*)?)?([A-Z]{1,2}\d{1,3}[A-Z]?|\d{1,3})/i)?.[1];
   if (!requested) return false;
-  const normalizedName = name.trim().replace(/\s+/g, " ").toLowerCase();
+  const normalizedName = name.trim().replace(/\s+/g, " ").toLowerCase().replace(/^mit\s+/, "");
   const normalizedId = requested.toLowerCase();
-  const normalizedBuildingName = normalizedName.replace(/^mit\s+/, "").replace(/^building\s+#?/, "");
-  return normalizedBuildingName === normalizedId || normalizedName === `building ${normalizedId}`;
+  const normalizedBuildingName = normalizedName.replace(/^(?:building|bldg\.?)\s*#?\s*/, "");
+  const escapedId = normalizedId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return normalizedBuildingName === normalizedId || new RegExp(`^${escapedId}(?:$|[\\s,():#/-])`, "i").test(normalizedBuildingName);
 }
 
 export function isWithinMITCampus(lat: number, lng: number): boolean {

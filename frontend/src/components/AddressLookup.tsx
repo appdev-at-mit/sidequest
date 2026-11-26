@@ -1,3 +1,4 @@
+import { apiFetch } from "../api";
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import Icon from "./Icon";
@@ -31,6 +32,8 @@ type PhotonFeature = {
     state?: string;
     postcode?: string;
     country?: string;
+    ref?: string;
+    osm_value?: string;
     osm_id?: number;
     osm_type?: string;
   };
@@ -127,11 +130,11 @@ export default function AddressLookup({ id, label, placeholder, initialValue = "
         location_bias_scale: "0.1",
       });
       try {
-        const response = await fetch(`https://photon.komoot.io/api/?${params.toString()}`, { signal: controller.signal, headers: { Accept: "application/geo+json, application/json" } });
+        const response = await apiFetch(`https://photon.komoot.io/api/?${params.toString()}`, { signal: controller.signal, headers: { Accept: "application/geo+json, application/json" } });
         if (!response.ok) throw new Error("Address suggestions are temporarily unavailable.");
         const payload: PhotonResponse = await response.json();
         const buildingFeatures = building.isBuilding
-          ? (payload.features ?? []).filter(feature => isMatchingMITBuilding(feature.properties?.name, value))
+          ? (payload.features ?? []).filter(feature => [feature.properties?.name, feature.properties?.ref, feature.properties?.osm_value].some(name => isMatchingMITBuilding(name, value)))
           : payload.features ?? [];
         const suggestions = buildingFeatures
           .map(feature => formatFeature(feature, building.isBuilding))
@@ -141,6 +144,10 @@ export default function AddressLookup({ id, label, placeholder, initialValue = "
         if (controller.signal.aborted || requestId !== requestVersion.current) return;
         setResults(suggestions);
         setActiveIndex(-1);
+        if (building.isBuilding && suggestions.length === 1) {
+          choose(suggestions[0]);
+          return;
+        }
         if (!suggestions.length) setError(building.isBuilding
           ? "That MIT building was not found. Check the building number or code."
           : "No matching address found. Try a street address or MIT building.");

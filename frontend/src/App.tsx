@@ -1,3 +1,4 @@
+import { apiFetch } from "./api";
 import { useEffect, useRef, useState } from "react";
 import useDismissible from "./hooks/useDismissible";
 import DropoffPicker, { type SavedAddress } from "./components/DropoffPicker";
@@ -10,7 +11,7 @@ import PostRequestDialog from "./components/PostRequestDialog";
 import AdminPage from "./pages/AdminPage";
 import UserLookupPage from "./pages/UserLookupPage";
 import RequestsPage from "./pages/RequestsPage";
-import WalletPage from "./pages/WalletPage";
+import SettingsPage from "./pages/SettingsPage";
 import Icon from "./components/Icon";
 import Logo from "./components/Logo";
 import Avatar from "./components/Avatar";
@@ -20,10 +21,10 @@ import FeedbackDialog from "./components/FeedbackDialog";
 import type { Request } from "./data/requests";
 import { useAuth } from "./AuthContext";
 
-type Page = "map" | "requests" | "active" | "profile" | "my-quests" | "admin" | "users" | "wallet";
+type Page = "map" | "requests" | "active" | "profile" | "my-quests" | "admin" | "users" | "wallet" | "settings";
 type UserSuggestion = { kerb: string; name: string; rating: number | null };
 type Coordinates = { lat: number; lng: number } | null;
-const PAGE_NAMES = new Set<Page>(["map", "requests", "active", "profile", "my-quests", "admin", "users", "wallet"]);
+const PAGE_NAMES = new Set<Page>(["map", "requests", "active", "profile", "my-quests", "admin", "users", "wallet", "settings"]);
 
 function selectedDropoffCoordinates(): Coordinates {
   try {
@@ -54,6 +55,7 @@ export default function App() {
   const [dropoffCoordinates, setDropoffCoordinates] = useState<Coordinates>(selectedDropoffCoordinates);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [postingRequest, setPostingRequest] = useState(false);
+  const [questSubmissionNotice, setQuestSubmissionNotice] = useState("");
   const [requestsVersion, setRequestsVersion] = useState(0);
   const [isAdmin, setIsAdmin] = useState(false);
   const [requests, setRequests] = useState<Request[]>([]);
@@ -88,7 +90,7 @@ export default function App() {
 
   useEffect(() => {
     if (!isLoggedIn) { setIsAdmin(false); return; }
-    fetch("/api/admin/status").then(response => response.ok ? response.json() : null).then(result => setIsAdmin(Boolean(result?.isAdmin))).catch(() => setIsAdmin(false));
+    apiFetch("/api/admin/status").then(response => response.ok ? response.json() : null).then(result => setIsAdmin(Boolean(result?.isAdmin))).catch(() => setIsAdmin(false));
   }, [isLoggedIn]);
 
   useEffect(() => {
@@ -108,7 +110,7 @@ export default function App() {
     const controller = new AbortController();
     setRouteRequest(null);
     setRouteRequestLoading(true);
-    fetch(`/api/quests/${encodeURIComponent(String(selectedRequestId))}`, { signal: controller.signal })
+    apiFetch(`/api/quests/${encodeURIComponent(String(selectedRequestId))}`, { signal: controller.signal })
       .then(async response => { const result = await response.json().catch(() => null); if (!response.ok) throw new Error(result?.msg ?? "Quest not found."); return result.data; })
       .then(raw => {
         if (controller.signal.aborted) return;
@@ -135,7 +137,7 @@ export default function App() {
     const controller = new AbortController();
     setUserSuggestionsLoading(true);
     const timer = window.setTimeout(() => {
-      fetch(`/api/users/search?q=${encodeURIComponent(search)}`, { signal: controller.signal })
+      apiFetch(`/api/users/search?q=${encodeURIComponent(search)}`, { signal: controller.signal })
         .then(async response => response.ok ? response.json() : null)
         .then(result => { if (!controller.signal.aborted) { setUserSuggestions(result?.data ?? []); setUserSuggestionsLoading(false); } })
         .catch(() => { if (!controller.signal.aborted) { setUserSuggestions([]); setUserSuggestionsLoading(false); } });
@@ -156,7 +158,7 @@ export default function App() {
     setRequestsError("");
 
     try {
-      const response = await fetch("/api/get-all-requests");
+      const response = await apiFetch("/api/get-all-requests");
 
       if (!response.ok) {
         throw new Error("Could not load requests");
@@ -267,7 +269,7 @@ export default function App() {
   useEffect(() => {
     if (!isLoggedIn) { setNotifications([]); return; }
     const controller = new AbortController();
-    const load = () => fetch("/api/notifications", { signal: controller.signal }).then(response => response.ok ? response.json() : null).then(result => {
+    const load = () => apiFetch("/api/notifications", { signal: controller.signal }).then(response => response.ok ? response.json() : null).then(result => {
       if (result?.data) { setNotifications(result.data); if (result.data.some((item: { type?: string; readAt?: string | null }) => item.type === "message" && !item.readAt)) setChatUnread(true); }
     }).catch(() => {});
     void load();
@@ -302,7 +304,7 @@ export default function App() {
   async function acceptSelectedQuest() {
     if (!selectedRequest || !window.confirm("Accept this quest?")) return;
     try {
-      const response = await fetch("/api/connect-request", {
+      const response = await apiFetch("/api/connect-request", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ _id: String(selectedRequest.id) }),
       });
@@ -323,7 +325,7 @@ export default function App() {
   async function deleteSelectedQuest() {
     if (!selectedRequest || !window.confirm(selectedRequest.status === "expired" || selectedRequest.expired ? "Delete this expired quest?" : "Delete this open quest?")) return;
     try {
-      const response = await fetch(`/api/requests/${encodeURIComponent(String(selectedRequest.id))}`, { method: "DELETE" });
+      const response = await apiFetch(`/api/requests/${encodeURIComponent(String(selectedRequest.id))}`, { method: "DELETE" });
       const result = await response.json().catch(() => null);
       if (!response.ok) { window.alert(result?.msg ?? "Could not delete this quest."); return; }
       setRequests(current => current.filter(request => String(request.id) !== String(selectedRequest.id)));
@@ -402,7 +404,7 @@ export default function App() {
             setChatRequestId("");
             setChatUnread(false);
             const unreadMessages = notifications.filter(item => item.type === "message" && !item.readAt);
-            unreadMessages.forEach(item => { void fetch(`/api/notifications/${item._id}/read`, { method: "PATCH" }); });
+            unreadMessages.forEach(item => { void apiFetch(`/api/notifications/${item._id}/read`, { method: "PATCH" }); });
             if (unreadMessages.length) setNotifications(current => current.map(item => item.type === "message" ? { ...item, readAt: new Date().toISOString() } : item));
           }} className="relative grid h-10 w-10 shrink-0 place-items-center rounded-md text-slate-600 transition hover:bg-[#BED8D4]/30 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#102A3A]">
             <Icon name={chatOpen ? "x" : "chat"} size={20} />
@@ -416,12 +418,13 @@ export default function App() {
           )}
         </div>
       </header>
+      {questSubmissionNotice && <p role="status" className="fixed right-4 top-20 z-[90] max-w-sm rounded-lg border border-[#BED8D4] bg-white px-4 py-3 text-sm font-semibold text-[#102A3A] shadow-lg">{questSubmissionNotice}<button type="button" className="ml-3 text-[#08679e] underline" onClick={() => setQuestSubmissionNotice("")}>Dismiss</button></p>}
       {notificationOpen && <section ref={notificationPanelRef} aria-label="Notifications" className="fixed right-4 top-[72px] z-[90] max-h-[min(78vh,620px)] w-[min(420px,calc(100vw-2rem))] overflow-y-auto rounded-2xl border border-[#BED8D4] bg-white p-5 shadow-xl">
-        <div className="mb-3 flex items-center justify-between border-b border-[#D8DEDE] pb-4"><h2 className="text-xl font-bold">Notifications</h2><button type="button" onClick={() => { setNotifications(current => current.map(item => ({ ...item, readAt: item.readAt ?? new Date().toISOString() }))); notifications.filter(item => !item.readAt).forEach(item => { void fetch(`/api/notifications/${item._id}/read`, { method: "PATCH" }); }); }} disabled={!notifications.some(item => !item.readAt)} className="text-sm font-semibold text-[#496A9A] disabled:opacity-50">Mark all as read</button></div>
+        <div className="mb-3 flex items-center justify-between border-b border-[#D8DEDE] pb-4"><h2 className="text-xl font-bold">Notifications</h2><button type="button" onClick={() => { setNotifications(current => current.map(item => ({ ...item, readAt: item.readAt ?? new Date().toISOString() }))); notifications.filter(item => !item.readAt).forEach(item => { void apiFetch(`/api/notifications/${item._id}/read`, { method: "PATCH" }); }); }} disabled={!notifications.some(item => !item.readAt)} className="text-sm font-semibold text-[#496A9A] disabled:opacity-50">Mark all as read</button></div>
         {!notifications.length ? <p className="py-5 text-center text-sm text-slate-500">No updates yet.</p> : <div className="divide-y divide-[#D8DEDE]">{(showAllNotifications ? notifications : notifications.slice(0, 3)).map(item => <button key={item._id} type="button" onClick={() => {
           if (!item.readAt) {
             setNotifications(current => current.map(entry => entry._id === item._id ? { ...entry, readAt: new Date().toISOString() } : entry));
-            void fetch(`/api/notifications/${item._id}/read`, { method: "PATCH" });
+            void apiFetch(`/api/notifications/${item._id}/read`, { method: "PATCH" });
           }
           setNotificationOpen(false);
           if (item.requestId) navigateQuest(item.requestId);
@@ -446,7 +449,7 @@ export default function App() {
         aria-hidden={!menuOpen}
       >
         <div className="flex min-h-16 items-center px-5 pt-4">
-          <button onClick={() => navigate("profile")} className="flex items-center gap-3 text-left">
+          <button onClick={() => { setUserProfileKerb(userKerb); setUserSearchQuery(""); navigate("users"); }} className="flex items-center gap-3 text-left">
             <Avatar initials={(userName || "U").slice(0, 1).toUpperCase()} />
             <span className="ml-2"><span className="block font-bold">{userName || "Your profile"}</span><span className="text-xs font-medium text-[#2081C3]">Manage account</span></span>
           </button>
@@ -457,8 +460,8 @@ export default function App() {
             { label: "Map", icon: "location" as const, target: "map" as const },
             { label: "My quests", icon: "bolt" as const, target: "my-quests" as const },
             { label: "Messages", icon: "chat" as const, target: null },
-            { label: "Payment settings", icon: "check" as const, target: "wallet" as const },
-            { label: "Settings", icon: "settings" as const, target: "profile" as const },
+            { label: "Search users", icon: "search" as const, target: "users" as const },
+            { label: "Settings", icon: "settings" as const, target: "settings" as const },
             ...(isAdmin ? [{ label: "Admin review", icon: "book" as const, target: "admin" as const }] : []),
           ].map((item) => (
             <button
@@ -471,7 +474,7 @@ export default function App() {
                   setChatUnread(false);
                   setChatOpen(true);
                   const unreadMessages = notifications.filter(notification => notification.type === "message" && !notification.readAt);
-                  unreadMessages.forEach(notification => { void fetch(`/api/notifications/${notification._id}/read`, { method: "PATCH" }); });
+                  unreadMessages.forEach(notification => { void apiFetch(`/api/notifications/${notification._id}/read`, { method: "PATCH" }); });
                   if (unreadMessages.length) setNotifications(current => current.map(notification => notification.type === "message" ? { ...notification, readAt: new Date().toISOString() } : notification));
                 } else if (item.target) navigate(item.target);
                 else {
@@ -480,7 +483,7 @@ export default function App() {
                 }
               }}
               className={`mt-1 flex w-full items-center gap-3 rounded-md px-3 py-3 text-sm font-semibold transition ${
-                page === item.target
+                page === item.target || (item.target === "settings" && page === "wallet")
                   ? "bg-[#BED8D4]/45 text-[#2081C3]"
                   : "text-slate-600 hover:bg-[#BED8D4]/25"
               }`}
@@ -492,7 +495,7 @@ export default function App() {
           ))}
           <div className="mt-auto">
             <button onClick={() => {
-              void fetch("/api/logout", { method: "DELETE" }).finally(() => {
+              void apiFetch("/api/logout", { method: "DELETE" }).finally(() => {
                 setIsLoggedIn(false);
                 setUserName("");
                 setUserKerb("");
@@ -511,13 +514,13 @@ export default function App() {
           </div>
         </div>
       </aside>
-      {postingRequest && (
-        <PostRequestDialog onClose={() => setPostingRequest(false)} onPosted={() => {
+      <PostRequestDialog open={postingRequest} onClose={() => setPostingRequest(false)} onPosted={(message) => {
           setPostingRequest(false);
+          setQuestSubmissionNotice(message);
+          window.setTimeout(() => setQuestSubmissionNotice(""), 7000);
           setQuery("");
           setRequestsVersion((version) => version + 1);
         }} />
-      )}
       {page === "map" && (
   <>
     {requestsError && <p role="alert">{requestsError}</p>}
@@ -529,7 +532,7 @@ export default function App() {
       currentKerb={userKerb}
       setSelectedRequestId={setSelectedRequestId}
       onAccept={async () => {
-        const response = await fetch("/api/connect-request", {
+        const response = await apiFetch("/api/connect-request", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ _id: String(selectedRequestId || selectedRequest?.id || "") }),
         });
@@ -551,7 +554,7 @@ export default function App() {
 
 {page === "requests" && <RequestsPage requests={requests} query={query} currentLocation={dropoffCoordinates} onViewOnMap={navigateQuest} />}
 
-{page === "wallet" && <WalletPage />}
+{(page === "wallet" || page === "settings") && <SettingsPage key={page} initialTab={page === "wallet" ? "payment" : "personalization"} />}
 
 {page === "active" && !selectedRequest && <main role={routeRequestLoading ? "status" : "alert"} className="mx-auto max-w-4xl px-5 py-16 text-center text-slate-600">{routeRequestLoading ? "Loading quest details…" : "Quest not found or no longer available."}</main>}
 {page === "active" && selectedRequest && (
@@ -567,7 +570,15 @@ export default function App() {
     onViewUser={kerb => { setUserSearchQuery(kerb); setUserProfileKerb(kerb); navigate("users"); }}
     onMessage={() => { setNotificationOpen(false); setChatRequestId(String(selectedRequest.id)); setChatOpen(true); }}
     onComplete={() => { setRequestsVersion(version => version + 1); }}
-    onCancelled={() => { setRequestsVersion(version => version + 1); navigate("map"); }}
+    onCancelled={(status, cancellation) => {
+      if (status === "open") {
+        setRequests(current => current.map(request => String(request.id) === String(selectedRequest.id)
+          ? { ...request, status: "open", helper: null, acceptedAt: null, agreementSnapshot: undefined, questStage: undefined, helperLocation: null, lastCancellation: cancellation ?? request.lastCancellation, expired: false }
+          : request));
+      }
+      setRequestsVersion(version => version + 1);
+      navigate("map");
+    }}
   />
 )}
 

@@ -5,7 +5,7 @@ import { categories as availableCategories } from "../data/requests";
 import type { Request } from "../data/requests";
 
 type Props = { requests: Request[]; query: string; currentLocation: { lat: number; lng: number } | null; onViewOnMap: (id: string | number) => void };
-type SortBy = "newest" | "highest-reward" | "lowest-reward" | "highest-rating" | "closest";
+type SortBy = "newest" | "highest-reward" | "highest-rating" | "closest";
 
 function distanceKm(from: { lat: number; lng: number }, to: { lat: number; lng: number }) {
   const radians = (degrees: number) => degrees * Math.PI / 180;
@@ -27,10 +27,7 @@ export default function RequestsPage({ requests, query, currentLocation, onViewO
     return requests.filter(request => (request.status ?? "open") === "open" && !request.expired && (category === "All" || request.category === category)
       && (!normalized || `${request.title} ${request.description} ${request.location} ${request.category}`.toLowerCase().includes(normalized)))
       .sort((a, b) => {
-        if (sortBy === "highest-reward" || sortBy === "lowest-reward") {
-          const difference = Number.parseFloat(b.reward) - Number.parseFloat(a.reward);
-          return sortBy === "highest-reward" ? difference : -difference;
-        }
+        if (sortBy === "highest-reward") return Number.parseFloat(b.reward) - Number.parseFloat(a.reward);
         if (sortBy === "highest-rating") return (b.rating ?? -1) - (a.rating ?? -1);
         if (sortBy === "closest" && currentLocation) {
           const distanceA = a.lat == null || a.lng == null ? Infinity : distanceKm(currentLocation, { lat: a.lat, lng: a.lng });
@@ -44,7 +41,6 @@ export default function RequestsPage({ requests, query, currentLocation, onViewO
   const sortOptions: { id: SortBy; label: string }[] = [
     { id: "newest", label: "Newest" },
     { id: "highest-reward", label: "Highest reward" },
-    { id: "lowest-reward", label: "Lowest reward" },
     { id: "highest-rating", label: "Highest rating" },
     { id: "closest", label: "Closest to me" },
   ];
@@ -68,7 +64,7 @@ export default function RequestsPage({ requests, query, currentLocation, onViewO
       </div>
       {!items.length ? <p className="py-14 text-center text-sm text-slate-500">No requests match your search.</p> : <div className="grid grid-cols-1 gap-5 py-6 sm:grid-cols-2 lg:grid-cols-3">{items.map(request => <button key={request.id} onClick={() => onViewOnMap(request.id)} className="group flex min-w-0 flex-col overflow-hidden rounded-xl border border-[#BED8D4] bg-white text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
         {request.imageUrl ? <img src={request.imageUrl} alt="" className="aspect-[16/9] w-full border-[6px] border-white object-cover" /> : <div className="quest-preview-art aspect-[16/9] w-full rounded-none border-[6px] border-white" aria-hidden="true"><span className="text-4xl">↗</span></div>}
-        <div className="flex flex-1 flex-col p-4"><div className="flex items-center justify-between gap-3"><h2 className="min-w-0 truncate font-extrabold">{request.title}</h2><span className="shrink-0 text-xs font-semibold text-slate-500">{currentLocation && request.lat != null && request.lng != null ? `${distanceMiles(currentLocation, { lat: request.lat, lng: request.lng }).toFixed(1)} mi away` : "Distance unavailable"}</span></div><span className="mt-1 text-xs text-slate-500">Posted by {request.poster}</span><QuestCountdown expiresAt={request.expiresAt ?? (request.end ? new Date(request.end).toISOString() : request.createdAt ? new Date(new Date(request.createdAt).getTime() + 24 * 60 * 60 * 1000).toISOString() : null)} /><div className="mt-auto flex items-end justify-between border-t border-[#BED8D4] pt-3"><span className="text-lg font-extrabold text-[#2081C3]">${request.reward}</span><span className="text-xs font-semibold text-slate-500">View map →</span></div></div>
+        <div className="flex flex-1 flex-col p-4"><div className="flex items-center justify-between gap-3"><h2 className="min-w-0 truncate font-extrabold">{request.title}</h2><span className="shrink-0 text-xs font-semibold text-slate-500">{currentLocation && request.lat != null && request.lng != null ? `${distanceMiles(currentLocation, { lat: request.lat, lng: request.lng }).toFixed(1)} mi away` : "Distance unavailable"}</span></div><span className="mt-1 text-xs text-slate-500">Posted by {request.poster}{request.requesterReviewCount ? <span className="ml-1 font-semibold text-slate-600"><span className="text-[#2081C3]">★</span> {request.requesterRating?.toFixed(1)} ({request.requesterReviewCount})</span> : <span className="ml-1">· No reviews yet</span>}</span><QuestCountdown expiresAt={request.expiresAt ?? (request.end ? new Date(request.end).toISOString() : request.createdAt ? new Date(new Date(request.createdAt).getTime() + 24 * 60 * 60 * 1000).toISOString() : null)} /><div className="mt-auto flex items-end justify-between border-t border-[#BED8D4] pt-3"><span className="text-lg font-extrabold text-[#2081C3]">${request.reward}</span><span className="text-xs font-semibold text-slate-500">View map →</span></div></div>
       </button>)}</div>}
     </div>
   </main>;
