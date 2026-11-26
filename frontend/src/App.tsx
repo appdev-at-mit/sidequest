@@ -408,9 +408,9 @@ export default function App() {
             {chatUnread && <span aria-label="Unread messages" className="absolute right-1 top-1 h-3 w-3 rounded-full border-2 border-[#F7F9F9] bg-red-500" />}
           </button>
           {(
-            <button onClick={() => navigate("my-quests")} aria-label="My quests"
+            <button onClick={() => setPostingRequest(true)} aria-label="Post a quest"
               className="flex shrink-0 items-center gap-1.5 rounded-lg bg-[#08679e] px-3 py-2 text-sm font-bold text-white hover:bg-[#075785]">
-              <span className="hidden min-[390px]:inline">My quests</span>
+              <span className="hidden min-[390px]:inline">+ Post a quest</span>
             </button>
           )}
         </div>
@@ -455,13 +455,22 @@ export default function App() {
             { label: "Quests", icon: "location" as const, target: "requests" as const },
             { label: "Map", icon: "location" as const, target: "map" as const },
             { label: "My quests", icon: "bolt" as const, target: "my-quests" as const },
+            { label: "Messages", icon: "chat" as const, target: null },
             { label: "Wallet", icon: "wallet" as const, target: "wallet" as const },
             ...(isAdmin ? [{ label: "Admin review", icon: "book" as const, target: "admin" as const }] : []),
           ].map((item) => (
             <button
               key={item.label}
               onClick={() => {
-                if (item.target) navigate(item.target);
+                if (item.label === "Messages") {
+                  setMenuOpen(false);
+                  setChatRequestId("");
+                  setChatUnread(false);
+                  setChatOpen(true);
+                  const unreadMessages = notifications.filter(notification => notification.type === "message" && !notification.readAt);
+                  unreadMessages.forEach(notification => { void fetch(`/api/notifications/${notification._id}/read`, { method: "PATCH" }); });
+                  if (unreadMessages.length) setNotifications(current => current.map(notification => notification.type === "message" ? { ...notification, readAt: new Date().toISOString() } : notification));
+                } else if (item.target) navigate(item.target);
                 else {
                   setMenuOpen(false);
                   window.alert("FAQ and support are coming soon.");
