@@ -27,11 +27,12 @@ export function addressPolicyError(address: string, instructions = ""): string |
 }
 
 export function resolveMITBuildingQuery(value: string): { query: string; isBuilding: boolean; error: string | null } {
-  const match = value.trim().match(/^(?:MIT\s+)?building\s+#?(\d{1,3})$/i);
+  const match = value.trim().match(/^(?:MIT\s+)?building\s+#?([A-Z]{1,2}\d{1,3}|\d{1,3})(?:\s+(?:and\s+)?(?:building\s*#?)?([A-Z]{1,2}\d{1,3}|\d{1,3}))?(?:\s*,?\s*(?:room|rm\.?)\s*#?[A-Z0-9-]+)?$/i);
   if (!match) return { query: value.trim(), isBuilding: false, error: null };
-  const number = Number(match[1]);
-  if (number < 1 || number > 76) return { query: value, isBuilding: true, error: "Enter an MIT building number from 1 to 76." };
-  return { query: `MIT Building ${number}, Cambridge, Massachusetts`, isBuilding: true, error: null };
+  const buildingIds = [match[1], match[2]].filter((id): id is string => Boolean(id));
+  const invalidNumber = buildingIds.some(id => /^\d+$/.test(id) && (Number(id) < 1 || Number(id) > 76));
+  if (invalidNumber) return { query: value, isBuilding: true, error: "Enter an MIT building number from 1 to 76, or a campus building code such as W20." };
+  return { query: `MIT Building ${buildingIds[0]}, Cambridge, Massachusetts`, isBuilding: true, error: null };
 }
 
 export function isWithinMITCampus(lat: number, lng: number): boolean {

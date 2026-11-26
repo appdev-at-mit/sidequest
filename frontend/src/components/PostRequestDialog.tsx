@@ -19,6 +19,8 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [pickup, setPickup] = useState<GeocodedAddress | null>(null);
   const [dropoff, setDropoff] = useState<GeocodedAddress | null>(null);
+  const [pickupRoom, setPickupRoom] = useState("");
+  const [dropoffRoom, setDropoffRoom] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [photoData, setPhotoData] = useState("");
@@ -36,11 +38,14 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
     if (busy) return;
     const fields = new FormData(event.currentTarget);
     const pay = Number(fields.get("pay"));
+    if (!Number.isFinite(pay) || pay < 3) { setError("The reward must be at least $3."); return; }
     const start = new Date(`${fields.get("startDate")}T${fields.get("startTime")}`);
     const end = new Date(`${fields.get("endDate")}T${fields.get("endTime")}`);
     if (!(end > start)) { setError("Choose a deadline after the start time."); return; }
     if (!pickup || !dropoff) { setError("Search for and select valid pickup and drop-off addresses."); return; }
-    const policyError = addressPolicyError(pickup.address) || addressPolicyError(dropoff.address);
+    const pickupAddress = pickupRoom.trim() ? `${pickup.address}, Room ${pickupRoom.trim()}` : pickup.address;
+    const dropoffAddress = dropoffRoom.trim() ? `${dropoff.address}, Room ${dropoffRoom.trim()}` : dropoff.address;
+    const policyError = addressPolicyError(pickupAddress) || addressPolicyError(dropoffAddress);
     if (policyError) { setError(policyError); return; }
 
     setBusy(true); setError("");
@@ -51,7 +56,7 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
           description: String(fields.get("description")).trim(), pay,
           category: String(fields.get("category")),
           start: start.toISOString(), end: end.toISOString(), lat: pickup.lat, lng: pickup.lng,
-          pickup: pickup.address, dropoff: dropoff.address, imageUrl: photoData,
+          pickup: pickupAddress, dropoff: dropoffAddress, imageUrl: photoData,
         }),
       });
       if (!response.ok) {
@@ -73,25 +78,27 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
     <form onSubmit={submit} className="grid gap-4" aria-busy={busy}>
       <label className="text-sm font-semibold">What do you need help with?<textarea name="description" className={inputClass} rows={2} maxLength={150} required /><span className="mt-1 block text-xs font-normal text-slate-500">Up to 150 characters</span></label>
       <label className="text-sm font-semibold">Category<select name="category" className={inputClass} defaultValue="" required><option value="" disabled>Select a category</option><option>Delivery</option><option>Moving</option><option>Home Help</option><option>Tech</option><option>Academic</option></select></label>
-      <div>
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="text-sm font-semibold">Photo (optional)</span>
-          <button type="button" onClick={() => photoInput.current?.click()} className="rounded-lg border border-[#BED8D4] bg-white px-4 py-2.5 text-sm font-bold text-[#08679e]">Upload photo</button>
-          {photoName && <><span className="max-w-56 truncate text-sm text-slate-600">{photoName}</span><button type="button" onClick={() => { setPhotoData(""); setPhotoName(""); if (photoInput.current) photoInput.current.value = ""; }} className="text-sm font-semibold text-slate-600 underline">Remove</button></>}
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-4">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-sm font-semibold">Photo (optional)</span>
+            <button type="button" onClick={() => photoInput.current?.click()} className="rounded-lg border border-[#BED8D4] bg-white px-4 py-2.5 text-sm font-bold text-[#08679e]">Upload photo</button>
+            {photoName && <><span className="max-w-56 truncate text-sm text-slate-600">{photoName}</span><button type="button" onClick={() => { setPhotoData(""); setPhotoName(""); if (photoInput.current) photoInput.current.value = ""; }} className="text-sm font-semibold text-slate-600 underline">Remove</button></>}
+          </div>
+          <input ref={photoInput} type="file" accept="image/*" className="sr-only" aria-label="Choose a photo from your device" onChange={event => {
+            const file = event.currentTarget.files?.[0];
+            if (!file) return;
+            if (!file.type.startsWith("image/")) { setError("Choose an image file."); event.currentTarget.value = ""; return; }
+            if (file.size > 5 * 1024 * 1024) { setError("Choose an image under 5 MB."); event.currentTarget.value = ""; return; }
+            const reader = new FileReader();
+            reader.onload = () => { setPhotoData(typeof reader.result === "string" ? reader.result : ""); setPhotoName(file.name); setError(""); };
+            reader.onerror = () => setError("Could not read that image. Try another file.");
+            reader.readAsDataURL(file);
+          }} />
+          {photoData && <img src={photoData} alt="Selected quest photo preview" className="mt-2 max-h-32 rounded-lg object-cover" />}
         </div>
-        <input ref={photoInput} type="file" accept="image/*" className="sr-only" aria-label="Choose a photo from your device" onChange={event => {
-          const file = event.currentTarget.files?.[0];
-          if (!file) return;
-          if (!file.type.startsWith("image/")) { setError("Choose an image file."); event.currentTarget.value = ""; return; }
-          if (file.size > 5 * 1024 * 1024) { setError("Choose an image under 5 MB."); event.currentTarget.value = ""; return; }
-          const reader = new FileReader();
-          reader.onload = () => { setPhotoData(typeof reader.result === "string" ? reader.result : ""); setPhotoName(file.name); setError(""); };
-          reader.onerror = () => setError("Could not read that image. Try another file.");
-          reader.readAsDataURL(file);
-        }} />
-        {photoData && <img src={photoData} alt="Selected quest photo preview" className="mt-2 max-h-32 rounded-lg object-cover" />}
+        <div className="flex items-center gap-2"><label htmlFor="quest-reward" className="text-sm font-semibold">Reward</label><input id="quest-reward" name="pay" className="block w-24 rounded-lg border border-[#BED8D4] bg-white p-2.5" type="number" min="3" step="0.01" required /></div>
       </div>
-      <label className="text-sm font-semibold">Reward<input name="pay" className={inputClass} type="number" min="0.01" step="0.01" required /></label>
       <div className="grid gap-3 sm:grid-cols-2">
         {([{ label: "Starts at", dateName: "startDate", timeName: "startTime" }, { label: "Deadline", dateName: "endDate", timeName: "endTime" }] as const).map(field => <fieldset key={field.dateName} className="min-w-0">
           <legend className="text-sm font-semibold">{field.label}</legend>
@@ -99,8 +106,14 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
           <label className="mt-2 block text-xs font-medium text-slate-600">Time<select name={field.timeName} className={inputClass} defaultValue="" required><option value="" disabled>Select a time</option>{timeOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
         </fieldset>)}
       </div>
-      <AddressLookup id="request-dropoff" label="Drop-off address" placeholder="Search a street address or building" initialValue={localStorage.getItem("sidequest-default-dropoff") ?? ""} onSelect={setDropoff} />
-      <AddressLookup id="request-pickup" label="Pickup address" placeholder="Search where the task begins" onSelect={setPickup} />
+      <div className="grid gap-2">
+        <AddressLookup id="request-dropoff" label="Drop-off address" placeholder="Street address or MIT building (e.g. W20 or 7 and 10)" initialValue={localStorage.getItem("sidequest-default-dropoff") ?? ""} onSelect={setDropoff} />
+        <label htmlFor="request-dropoff-room" className="text-xs font-medium text-slate-600">Room number (optional)<input id="request-dropoff-room" value={dropoffRoom} onChange={event => setDropoffRoom(event.target.value)} className="mt-1 block w-full rounded-lg border border-[#BED8D4] bg-white p-2.5 text-sm" maxLength={20} placeholder="e.g. 407" /></label>
+      </div>
+      <div className="grid gap-2">
+        <AddressLookup id="request-pickup" label="Pickup address" placeholder="Street address or MIT building (e.g. W20 or 7 and 10)" onSelect={setPickup} />
+        <label htmlFor="request-pickup-room" className="text-xs font-medium text-slate-600">Room number (optional)<input id="request-pickup-room" value={pickupRoom} onChange={event => setPickupRoom(event.target.value)} className="mt-1 block w-full rounded-lg border border-[#BED8D4] bg-white p-2.5 text-sm" maxLength={20} placeholder="e.g. 407" /></label>
+      </div>
       <p className="-mt-2 text-xs text-slate-500">Choose a publicly accessible address. Residence hall meetups should be at the lobby or front desk.</p>
       {error && <p role="alert" className="text-sm font-semibold text-red-700">{error}</p>}
       <p className="text-xs leading-5 text-slate-500">SideQuest records quest agreements and payment confirmations but does not process, guarantee, or insure external payments.</p>

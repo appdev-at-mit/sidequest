@@ -29,7 +29,7 @@ export default function AddressLookup({ id, label, placeholder, initialValue = "
       const response = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&addressdetails=1&q=${encodeURIComponent(building.query)}`, { headers: { Accept: "application/json" } });
       if (!response.ok) throw new Error("Address search is temporarily unavailable.");
       const found: Result[] = await response.json();
-      const matches = found.map(item => ({ address: item.display_name, lat: Number(item.lat), lng: Number(item.lon) }))
+      const matches = found.map(item => ({ address: building.isBuilding ? query.trim() : item.display_name, lat: Number(item.lat), lng: Number(item.lon) }))
         .filter(item => Number.isFinite(item.lat) && Number.isFinite(item.lng) && (!building.isBuilding || isWithinMITCampus(item.lat, item.lng)));
       if (!matches.length) throw new Error(building.isBuilding ? "That building number was not found within MIT. Try a nearby street address." : "No matching address was found. Try a street address or building name.");
       setResults(matches);

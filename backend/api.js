@@ -162,8 +162,8 @@ function summarizeQuestTitle(description) {
             return res.status(400).json({ result: "fail", msg: "Choose a quest category." });
         }
         if (typeof description !== "string" || !description.trim() || description.trim().length > 150
-            || !Number.isFinite(pay) || !Number.isSafeInteger(rewardCents) || rewardCents <= 0 || rewardCents / 100 !== pay) {
-            return res.status(400).json({ result: "fail", msg: "Enter a description and a positive numeric reward amount." });
+            || !Number.isFinite(pay) || !Number.isSafeInteger(rewardCents) || rewardCents < 300 || rewardCents / 100 !== pay) {
+            return res.status(400).json({ result: "fail", msg: "Enter a description and a numeric reward of at least $3." });
         }
         if (typeof start !== "string" || typeof end !== "string" || !(Date.parse(end) > Date.parse(start))) {
             return res.status(400).json({ result: "fail", msg: "Choose a deadline after the start time." });
@@ -203,8 +203,8 @@ function summarizeQuestTitle(description) {
         const rewardCents = typeof pay === "number" ? Math.round(pay * 100) : NaN;
         if (!["Delivery", "Moving", "Home Help", "Tech", "Academic"].includes(category)) return res.status(400).json({ msg: "Choose a quest category." });
         if (typeof description !== "string" || !description.trim() || description.trim().length > 150
-            || !Number.isFinite(pay) || !Number.isSafeInteger(rewardCents) || rewardCents <= 0 || rewardCents / 100 !== pay) {
-            return res.status(400).json({ msg: "Enter a description and a positive numeric reward amount." });
+            || !Number.isFinite(pay) || !Number.isSafeInteger(rewardCents) || rewardCents < 300 || rewardCents / 100 !== pay) {
+            return res.status(400).json({ msg: "Enter a description and a numeric reward of at least $3." });
         }
         if (typeof start !== "string" || typeof end !== "string" || !(Date.parse(end) > Date.parse(start))) return res.status(400).json({ msg: "Choose a deadline after the start time." });
         try {
