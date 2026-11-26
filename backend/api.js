@@ -9,12 +9,30 @@ import MongoStore from "connect-mongo";
 import path from "path";
 import { createHash } from "node:crypto";
 import locationService from "./location-service.js";
+import auth from "./auth.js";
+import inputValidation from "./validation.js";
 dotenv.config();
+
+if (typeof process.env.SECRET !== "string" || process.env.SECRET.length < 32) {
+    throw new Error("SECRET must contain at least 32 characters before the API can start.");
+}
 
 const app = express();
 const production = process.env.NODE_ENV === "production";
 const sessionCookie = { httpOnly: true, sameSite: "lax", secure: production, path: "/" };
 const rememberDuration = 30 * 24 * 60 * 60 * 1000;
+const { attachAuthenticatedUser, requireAuthentication, isQuestParticipant } = auth;
+const { schemas, parseReward } = inputValidation;
+
+app.disable("x-powered-by");
+app.use((_req, res, next) => {
+    res.set("X-Content-Type-Options", "nosniff");
+    res.set("X-Frame-Options", "DENY");
+    res.set("Referrer-Policy", "strict-origin-when-cross-origin");
+    res.set("Permissions-Policy", "camera=(), microphone=(), geolocation=(self)");
+    if (production) res.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    next();
+});
 
 app.use(express.json({ limit: "8mb" }));
 const writeRateLimits = new Map();
@@ -59,11 +77,18 @@ app.use(session({
     cookie: sessionCookie,
     store: MongoStore.create({
         mongoUrl: process.env.MONGODB_URI,
-        ttl: 24 * 60 * 60
+        ttl: 30 * 24 * 60 * 60
     })
 }));
 app.use(passport.initialize());
 app.use(passport.session());
+app.use("/api", attachAuthenticatedUser);
+app.use("/api", (req, res, next) => {
+    const publicRoute = (req.method === "GET" && ["/auth-status", "/admin/status"].includes(req.path))
+        || (req.method === "POST" && ["/login", "/signup"].includes(req.path))
+        || (req.method === "DELETE" && req.path === "/logout");
+    return publicRoute ? next() : requireAuthentication(req, res, next);
+});
 app.use(express.static(path.resolve("../frontend/dist")));
 
 passport.use(new LocalStrategy({usernameField: "kerb"},
@@ -81,11 +106,13 @@ passport.use(new LocalStrategy({usernameField: "kerb"},
     }
 ))
 passport.serializeUser((user, done) => {
-    done(null, user.kerb);
+    done(null, `id:${String(user._id)}`);
 })
-passport.deserializeUser(async (kerb, done) => {
+passport.deserializeUser(async (identityId, done) => {
     try {
-        const user = await db.findUser(kerb);
+        const user = typeof identityId === "string" && identityId.startsWith("id:")
+            ? await db.findUserById(identityId.slice(3))
+            : await db.findUser(identityId); // Existing sessions stored the Kerberos alias.
         return done(null, user || false);
     } catch (e) {
         return done(e);
@@ -100,11 +127,8 @@ function adminKerbs() {
 }
 
 function requireAdmin(req, res) {
-    if (!req.isAuthenticated()) {
-        res.status(401).json({ msg: "You need to log in first." });
-        return false;
-    }
-    if (!adminKerbs().has(req.user.kerb)) {
+    if (!req.auth) return false; // Authentication is enforced by the API middleware.
+    if (!req.auth.roles.includes("admin") && !adminKerbs().has(req.auth.kerb)) {
         res.status(403).json({ msg: "Administrator access is required." });
         return false;
     }
@@ -148,7 +172,8 @@ function summarizeQuestTitle(description) {
         res.json({
             isLoggedIn: req.isAuthenticated(),
             name: req.user?.name ?? "",
-            kerb: req.user?.kerb ?? ""
+            kerb: req.user?.kerb ?? "",
+            identityVerificationStatus: req.auth?.identityVerificationStatus ?? "unverified",
         });
     });
 
@@ -173,16 +198,17 @@ function summarizeQuestTitle(description) {
         if (typeof idempotencyKey !== "string" || !/^[A-Za-z0-9_-]{16,100}$/.test(idempotencyKey)) return res.status(400).json({ msg: "A valid request key is required. Refresh the form and try again." });
         const body = req.body ?? {};
         const { description, category, pay, start, end, paymentMethod } = body;
-        const rewardCents = typeof pay === "number" ? Math.round(pay * 100) : NaN;
-        if (!["Delivery", "Moving", "Home Help", "Tech", "Academic"].includes(category)) return res.status(400).json({ result: "fail", msg: "Choose a quest category." });
-        if (!DBController.PAYMENT_METHODS.includes(paymentMethod)) return res.status(400).json({ result: "fail", msg: "Choose a payment method." });
-        if (typeof description !== "string" || !description.trim() || description.trim().length > 150
+        const rewardCents = parseReward(pay) ?? NaN;
+        if (!schemas.category(category)) return res.status(400).json({ result: "fail", msg: "Choose a quest category." });
+        if (!schemas.paymentMethod(paymentMethod)) return res.status(400).json({ result: "fail", msg: "Choose a payment method." });
+        if (!schemas.boundedText(description, 150)
             || !Number.isFinite(pay) || !Number.isSafeInteger(rewardCents) || rewardCents < 300 || rewardCents / 100 !== pay) {
-            return res.status(400).json({ result: "fail", msg: "Enter a description and a numeric reward of at least $3." });
+            return res.status(400).json({ result: "fail", msg: `Enter a description and a reward from $3.00 through $${(inputValidation.MAX_REWARD_CENTS / 100).toFixed(2)}.` });
         }
-        const startMs = typeof start === "string" ? Date.parse(start) : NaN;
-        const endMs = typeof end === "string" ? Date.parse(end) : NaN;
-        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || !(endMs > startMs)) return res.status(400).json({ result: "fail", msg: "Choose a valid deadline after the start time." });
+        const questStart = start == null ? new Date().toISOString() : start;
+        const startMs = schemas.isoDateTime(questStart) ? Date.parse(questStart) : NaN;
+        const endMs = schemas.isoDateTime(end) ? Date.parse(end) : NaN;
+        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || !(endMs > startMs) || endMs <= Date.now()) return res.status(400).json({ result: "fail", msg: "Choose a future deadline." });
         const imageUrl = typeof body.imageUrl === "string" ? body.imageUrl : "";
         const validPhoto = imageUrl.length <= 7_000_000 && (!imageUrl || /^data:image\/(?:png|jpe?g|webp|gif);base64,[A-Za-z0-9+/]+=*$/i.test(imageUrl));
         if (!validPhoto) return res.status(400).json({ result: "fail", msg: "Choose an image under 5 MB in PNG, JPEG, WebP, or GIF format." });
@@ -190,7 +216,7 @@ function summarizeQuestTitle(description) {
         let suspended, pickupResult, dropoffResult;
         try {
             [suspended, pickupResult, dropoffResult] = await Promise.all([
-                db.userIsSuspended(req.user.kerb),
+                db.userIsSuspended(req.auth),
                 locationService.resolveLocation(body.pickupLocation ?? body.pickup),
                 locationService.resolveLocation(body.dropoffLocation ?? body.dropoff),
             ]);
@@ -212,6 +238,7 @@ function summarizeQuestTitle(description) {
         const cleanDescription = sanitizeText(description, 150);
         const payload = {
             requester: req.user.kerb,
+            requesterId: req.auth.userId,
             description: cleanDescription,
             title: summarizeQuestTitle(cleanDescription),
             category,
@@ -235,27 +262,27 @@ function summarizeQuestTitle(description) {
         if (request?.conflict) return res.status(409).json({ msg: "This request key was already used for a different quest. Refresh the form before submitting again." });
         if (!request) return res.status(403).json({ result: "fail", msg: "Your account is suspended and cannot post quests." });
         const created = request.data ?? request;
-        const { idempotencyKey: _idempotencyKey, payloadFingerprint: _payloadFingerprint, ...publicRequest } = created;
+        const { idempotencyKey: _idempotencyKey, payloadFingerprint: _payloadFingerprint, requesterId: _requesterId, helperId: _helperId, ...publicRequest } = created;
         return res.status(request.duplicate ? 200 : 201).json({ result: "success", msg: "Created quest", data: publicRequest });
     });
 
     app.put("/api/requests/:id", async (req, res, next) => {
         if (rateLimited(req, res, "edit-request", 30)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid request ID" });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid request ID" });
         const { description, category, pay, start, end } = req.body ?? {};
-        const rewardCents = typeof pay === "number" ? Math.round(pay * 100) : NaN;
-        if (!["Delivery", "Moving", "Home Help", "Tech", "Academic"].includes(category)) return res.status(400).json({ msg: "Choose a quest category." });
-        if (typeof description !== "string" || !description.trim() || description.trim().length > 150
+        const rewardCents = parseReward(pay) ?? NaN;
+        if (!schemas.category(category)) return res.status(400).json({ msg: "Choose a quest category." });
+        if (!schemas.boundedText(description, 150)
             || !Number.isFinite(pay) || !Number.isSafeInteger(rewardCents) || rewardCents < 300 || rewardCents / 100 !== pay) {
-            return res.status(400).json({ msg: "Enter a description and a numeric reward of at least $3." });
+            return res.status(400).json({ msg: `Enter a description and a reward from $3.00 through $${(inputValidation.MAX_REWARD_CENTS / 100).toFixed(2)}.` });
         }
-        const startMs = typeof start === "string" ? Date.parse(start) : NaN;
-        const endMs = typeof end === "string" ? Date.parse(end) : NaN;
-        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || !(endMs > startMs)) return res.status(400).json({ msg: "Choose a deadline after the start time." });
+        const startMs = schemas.isoDateTime(start) ? Date.parse(start) : NaN;
+        const endMs = schemas.isoDateTime(end) ? Date.parse(end) : NaN;
+        if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || !(endMs > startMs) || endMs <= Date.now()) return res.status(400).json({ msg: "Choose a future deadline after the start time." });
         try {
             const cleanDescription = sanitizeText(description, 150);
-            const request = await db.updateOpenRequest(req.params.id, req.user.kerb, {
+            const request = await db.updateOpenRequest(req.params.id, req.auth, {
                 description: cleanDescription, title: summarizeQuestTitle(cleanDescription), category,
                 rewardCents, pay, start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString(), expiresAt: new Date(endMs),
             });
@@ -275,7 +302,7 @@ function summarizeQuestTitle(description) {
         }
         const dest = req.body?.dest;
         if (typeof dest !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(dest) || dest === req.user.kerb) return res.status(400).json({ msg: "Choose another valid user." });
-        const blocked = await db.toggleBlock(req.user.kerb, dest);
+        const blocked = await db.toggleBlock(req.auth, dest);
         if (blocked == null) return res.status(404).json({ msg: "User not found." });
         res.status(200).json({
             result: "success",
@@ -287,12 +314,12 @@ function summarizeQuestTitle(description) {
     app.post("/api/signup", async (req, res) => {
         if (rateLimited(req, res, "signup", 5, 60 * 60 * 1000)) return;
         const { kerb, name, password } = req.body ?? {};
-        if (!validCredentials(kerb, password)
-            || kerb.trim() !== kerb || !/^[a-zA-Z0-9_-]+$/.test(kerb)
+        if (!schemas.kerb(kerb) || !validCredentials(kerb, password)
+            || kerb.trim() !== kerb
             || typeof name !== "string" || !name.trim() || name.trim().length > 100) {
             return res.status(400).json({ result: "fail", msg: "Enter a name and a valid Kerberos username." });
         }
-        if (password.length < 12) {
+        if (!schemas.password(password)) {
             return res.status(400).json({ result: "fail", msg: "Use a password with at least 12 characters." });
         }
 
@@ -351,7 +378,7 @@ function summarizeQuestTitle(description) {
             })
             return;
         }
-        const requests = await db.getAllRequests(req.user.kerb);
+        const requests = await db.getAllRequests(req.auth);
         const kerbs = [...new Set(requests.map(request => request.requester).filter(Boolean))];
         const owners = await Promise.all(kerbs.map(async kerb => {
             const profile = await db.getUserMetrics(kerb);
@@ -369,9 +396,9 @@ function summarizeQuestTitle(description) {
 
     app.get("/api/quests/:id", async (req, res, next) => {
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID" });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID" });
         try {
-            const quest = await db.getQuestForViewer(req.params.id, req.user.kerb);
+            const quest = await db.getQuestForViewer(req.params.id, req.auth);
             if (!quest) return res.status(404).json({ msg: "Quest not found or no longer available." });
             const kerbs = [quest.requester, quest.helper].filter(Boolean);
             const users = await db.users.find({ kerb: { $in: kerbs } }, { projection: { kerb: 1, name: 1 } }).toArray();
@@ -387,12 +414,13 @@ function summarizeQuestTitle(description) {
             });
         }
 
-        const [profile, leaderboard] = await Promise.all([db.getUserMetrics(req.user.kerb, true), db.getLeaderboard(null)]);
+        const [profile, leaderboard] = await Promise.all([db.getUserMetrics(req.auth, true), db.getLeaderboard(null)]);
         if (!profile) return res.status(404).json({ msg: "Profile not found." });
+        const { userId: _userId, ...publicProfile } = profile;
         res.json({
-            ...profile,
+            ...publicProfile,
             rank: leaderboard.findIndex(user => user.kerb === req.user.kerb) + 1,
-            reviews: await db.publicReviews(req.user.kerb),
+            reviews: await db.publicReviews(profile.userId),
         });
     });
 
@@ -400,21 +428,21 @@ function summarizeQuestTitle(description) {
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
         if (!/^[a-zA-Z0-9_-]{1,64}$/.test(req.params.kerb)) return res.status(400).json({ msg: "Invalid username." });
         try {
-            if (await db.isBlockedEitherWay(req.user.kerb, req.params.kerb)) return res.status(404).json({ msg: "Profile not found." });
+            if (await db.isBlockedEitherWay(req.auth, req.params.kerb)) return res.status(404).json({ msg: "Profile not found." });
             const [profile, leaderboard] = await Promise.all([
                 db.getUserMetrics(req.params.kerb, req.params.kerb === req.user.kerb),
                 db.getLeaderboard(null),
             ]);
             if (!profile) return res.status(404).json({ msg: "Profile not found." });
             const { kerb, name, createdAt, identityVerificationStatus, postedQuests, completedQuests, confirmedPayments, paymentConfirmationRate, totalConfirmedEarningsCents, rating, reviewCount, reviews, preferredPaymentMethod, paymentInstructions, moderationStatus, strikes } = profile;
-            res.json({ kerb, name, createdAt, rank: leaderboard.findIndex(user => user.kerb === kerb) + 1, identityVerificationStatus, postedQuests, completedQuests, confirmedPayments, paymentConfirmationRate, totalConfirmedEarningsCents, rating, reviewCount, ...(req.params.kerb === req.user.kerb ? { preferredPaymentMethod, paymentInstructions, moderationStatus, strikes, reviews } : { reviews: await db.publicReviews(req.params.kerb) }) });
+            res.json({ kerb, name, createdAt, rank: leaderboard.findIndex(user => user.kerb === kerb) + 1, identityVerificationStatus, postedQuests, completedQuests, confirmedPayments, paymentConfirmationRate, totalConfirmedEarningsCents, rating, reviewCount, ...(req.params.kerb === req.user.kerb ? { preferredPaymentMethod, paymentInstructions, moderationStatus, strikes, reviews } : { reviews: await db.publicReviews(profile.userId) }) });
         } catch (error) { next(error); }
     });
 
     app.get("/api/recommendations", async (req, res, next) => {
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
         if (rateLimited(req, res, "recommendations", 30)) return;
-        try { res.json({ data: await db.getRecommendations(req.user.kerb) }); }
+        try { res.json({ data: await db.getRecommendations(req.auth) }); }
         catch (error) { next(error); }
     });
 
@@ -426,14 +454,14 @@ function summarizeQuestTitle(description) {
             return res.status(400).json({ msg: "Choose a supported external payment method and keep instructions under 160 characters." });
         }
         try {
-            const saved = await db.updatePaymentPreference(req.user.kerb, method, sanitizeText(instructions, 160));
+            const saved = await db.updatePaymentPreference(req.auth, method, sanitizeText(instructions, 160));
             if (!saved) return res.status(404).json({ msg: "Your SideQuest account could not be found. Sign in again and retry." });
             return res.json({ result: "success", msg: "Payment preference saved. It will be shared only with an accepted quest requester." });
         } catch (error) { return next(error); }
     });
 
     app.get("/api/admin/status", (req, res) => {
-        res.json({ isAdmin: Boolean(req.isAuthenticated() && adminKerbs().has(req.user.kerb)) });
+        res.json({ isAdmin: Boolean(req.auth && (req.auth.roles.includes("admin") || adminKerbs().has(req.auth.kerb))) });
     });
 
     app.get("/api/admin/queue", async (req, res, next) => {
@@ -445,12 +473,12 @@ function summarizeQuestTitle(description) {
     app.post("/api/admin/disputes/:id/resolve", async (req, res, next) => {
         if (rateLimited(req, res, "admin-dispute", 30)) return;
         if (!requireAdmin(req, res)) return;
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid dispute ID." });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid dispute ID." });
         const { outcome, decision } = req.body ?? {};
         const cleanDecision = sanitizeText(decision, 2000);
         if (!["restore", "cancel"].includes(outcome) || !cleanDecision) return res.status(400).json({ msg: "Choose an outcome and record an administrative decision." });
         try {
-            const result = await db.resolveDispute(req.params.id, req.user.kerb, outcome, cleanDecision);
+            const result = await db.resolveDispute(req.params.id, req.auth, outcome, cleanDecision);
             if (!result) return res.status(409).json({ msg: "This dispute can no longer be resolved." });
             res.json({ result: "success" });
         } catch (error) { next(error); }
@@ -459,11 +487,11 @@ function summarizeQuestTitle(description) {
     app.post("/api/admin/reports/:id/resolve", async (req, res, next) => {
         if (rateLimited(req, res, "admin-report", 30)) return;
         if (!requireAdmin(req, res)) return;
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid report ID." });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid report ID." });
         const decision = sanitizeText(req.body?.decision, 2000);
         if (!decision) return res.status(400).json({ msg: "Record a review decision." });
         try {
-            const report = await db.resolveUserReport(req.params.id, req.user.kerb, decision);
+            const report = await db.resolveUserReport(req.params.id, req.auth, decision);
             if (!report) return res.status(409).json({ msg: "This report was already reviewed." });
             res.json({ result: "success" });
         } catch (error) { next(error); }
@@ -475,7 +503,7 @@ function summarizeQuestTitle(description) {
         if (!/^[a-zA-Z0-9_-]{1,64}$/.test(req.params.kerb)) return res.status(400).json({ msg: "Invalid username." });
         const note = sanitizeText(req.body?.note, 1000);
         try {
-            const result = await db.moderateUser(req.params.kerb, req.user.kerb, req.body?.action, note);
+            const result = await db.moderateUser(req.params.kerb, req.auth, req.body?.action, note);
             if (!result) return res.status(404).json({ msg: "User not found or moderation action is invalid." });
             res.json({ result: "success", data: result });
         } catch (error) { next(error); }
@@ -484,12 +512,12 @@ function summarizeQuestTitle(description) {
     app.post("/api/admin/reports/:id/moderate", async (req, res, next) => {
         if (rateLimited(req, res, "admin-report-moderation", 30)) return;
         if (!requireAdmin(req, res)) return;
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id) || !/^[a-zA-Z0-9_-]{1,64}$/.test(req.body?.target ?? "")) return res.status(400).json({ msg: "Invalid report or user." });
+        if (!schemas.objectId(req.params.id) || !/^[a-zA-Z0-9_-]{1,64}$/.test(req.body?.target ?? "")) return res.status(400).json({ msg: "Invalid report or user." });
         const note = sanitizeText(req.body?.note, 1000);
         const decision = sanitizeText(req.body?.decision, 2000);
         if (!note || !decision) return res.status(400).json({ msg: "Record an administrative note and decision." });
         try {
-            const result = await db.moderateUserFromReport(req.params.id, req.user.kerb, req.body.target, req.body.action, note, decision);
+            const result = await db.moderateUserFromReport(req.params.id, req.auth, req.body.target, req.body.action, note, decision);
             if (!result) return res.status(409).json({ msg: "This report was already reviewed or the action is invalid." });
             res.json({ result: "success", data: result });
         } catch (error) { next(error); }
@@ -501,20 +529,20 @@ function summarizeQuestTitle(description) {
         const query = typeof req.query.q === "string" ? req.query.q.trim().slice(0, 80) : "";
         if (query.length < 2) return res.status(400).json({ msg: "Enter at least two characters." });
         try {
-            res.json({ data: await db.searchUsers(query, req.user.kerb) });
+            res.json({ data: await db.searchUsers(query, req.auth) });
         } catch (error) { next(error); }
     });
 
     app.get("/api/notifications", async (req, res, next) => {
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
-        try { res.json({ data: await db.getNotifications(req.user.kerb) }); }
+        try { res.json({ data: await db.getNotifications(req.auth) }); }
         catch (error) { next(error); }
     });
 
     app.patch("/api/notifications/:id/read", async (req, res, next) => {
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid notification ID" });
-        try { await db.markNotificationRead(req.params.id, req.user.kerb); res.json({ result: "success" }); }
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid notification ID" });
+        try { await db.markNotificationRead(req.params.id, req.auth); res.json({ result: "success" }); }
         catch (error) { next(error); }
     });
 
@@ -527,7 +555,7 @@ function summarizeQuestTitle(description) {
             return res.status(400).json({ msg: "Choose a feedback type and enter a message under 2,000 characters." });
         }
         try {
-            await db.submitFeedback(req.user.kerb, kind, message);
+            await db.submitFeedback(req.auth, kind, message);
             res.status(201).json({ result: "success" });
         } catch (error) { next(error); }
     });
@@ -540,26 +568,26 @@ function summarizeQuestTitle(description) {
 
     app.get("/api/requests/:id/messages", async (req, res, next) => {
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid request ID" });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid request ID" });
         try {
             const request = await db.getRequestById(req.params.id);
-            if (!request?.helper || ![request.requester, request.helper].includes(req.user.kerb)) return res.status(403).json({ msg: "Chat is available after a quest has been accepted, to the requester and assigned completer." });
-            if (await db.isBlockedEitherWay(request.requester, request.helper)) return res.status(403).json({ msg: "Messaging is unavailable between these users." });
+            if (!request?.helper || !isQuestParticipant(request, req.auth)) return res.status(403).json({ msg: "Chat is available after a quest has been accepted, to the requester and assigned completer." });
+            if (await db.isBlockedEitherWay({ userId: request.requesterId ? String(request.requesterId) : "", kerb: request.requester }, { userId: request.helperId ? String(request.helperId) : "", kerb: request.helper })) return res.status(403).json({ msg: "Messaging is unavailable between these users." });
             const messages = await db.getQuestMessages(req.params.id, typeof req.query.since === "string" ? req.query.since : null);
-            res.json({ data: messages.map(message => ({ sender: message.sender, text: message.text, createdAt: message.createdAt, own: message.sender === req.user.kerb })) });
+            res.json({ data: messages.map(message => ({ sender: message.sender, text: message.text, createdAt: message.createdAt, own: message.senderId ? String(message.senderId) === req.auth.userId : message.sender === req.user.kerb })) });
         } catch (error) { next(error); }
     });
 
     app.post("/api/requests/:id/messages", async (req, res, next) => {
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid request ID" });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid request ID" });
         const text = typeof req.body?.text === "string" ? req.body.text.trim() : "";
-        if (!text || text.length > 2000) return res.status(400).json({ msg: "Enter a message under 2,000 characters." });
+        if (!schemas.boundedText(text, 2000)) return res.status(400).json({ msg: "Enter a message under 2,000 characters." });
         try {
             const request = await db.getRequestById(req.params.id);
-            if (!request?.helper || ![request.requester, request.helper].includes(req.user.kerb)) return res.status(403).json({ msg: "Chat is available after a quest has been accepted, to the requester and assigned completer." });
-            if (await db.isBlockedEitherWay(request.requester, request.helper)) return res.status(403).json({ msg: "Messaging is unavailable between these users." });
-            const message = await db.addQuestMessage(req.params.id, req.user.kerb, text);
+            if (!request?.helper || !isQuestParticipant(request, req.auth)) return res.status(403).json({ msg: "Chat is available after a quest has been accepted, to the requester and assigned completer." });
+            if (await db.isBlockedEitherWay({ userId: request.requesterId ? String(request.requesterId) : "", kerb: request.requester }, { userId: request.helperId ? String(request.helperId) : "", kerb: request.helper })) return res.status(403).json({ msg: "Messaging is unavailable between these users." });
+            const message = await db.addQuestMessage(req.params.id, req.auth, text);
             const recipient = request.requester === req.user.kerb ? request.helper : request.requester;
             if (recipient) await db.addNotification(recipient, {
                 type: "message", title: `Message from ${req.user.name || req.user.kerb}`, message: text.slice(0, 180), requestId: req.params.id,
@@ -576,7 +604,7 @@ function summarizeQuestTitle(description) {
         }
 
         try {
-            const requests = await db.getPostedRequests(req.user.kerb);
+            const requests = await db.getPostedRequests(req.auth);
             res.json(requests);
         } catch (error) {
             next(error);
@@ -585,7 +613,7 @@ function summarizeQuestTitle(description) {
 
     app.get("/api/my-quests", async (req, res, next) => {
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
-        try { res.json({ data: await db.getMyQuests(req.user.kerb) }); }
+        try { res.json({ data: await db.getMyQuests(req.auth) }); }
         catch (error) { next(error); }
     });
 
@@ -598,13 +626,13 @@ function summarizeQuestTitle(description) {
 
         const { id } = req.params;
 
-        if (!/^[0-9a-fA-F]{24}$/.test(id)) {
+        if (!schemas.objectId(id)) {
             return res.status(400).json({ msg: "Invalid request ID" });
         }
 
         try {
             const oldRequest = await db.getRequestById(id);
-            const result = await db.deleteRequest(id, req.user.kerb);
+            const result = await db.deleteRequest(id, req.auth);
 
             if (result.modifiedCount === 0) {
                 return res.status(404).json({
@@ -631,12 +659,12 @@ function summarizeQuestTitle(description) {
             })
             return;
         }
-        if (await db.userIsSuspended(req.user.kerb)) return res.status(403).json({ result: "fail", msg: "Your account is suspended and cannot accept quests." });
+        if (await db.userIsSuspended(req.auth)) return res.status(403).json({ result: "fail", msg: "Your account is suspended and cannot accept quests." });
         try {
             const _id = req.body._id;
-            if (typeof _id !== "string" || !/^[0-9a-fA-F]{24}$/.test(_id)) return res.status(400).json({ result: "fail", msg: "Invalid request ID" });
+            if (typeof _id !== "string" || !schemas.objectId(_id)) return res.status(400).json({ result: "fail", msg: "Invalid request ID" });
             const request = await db.getRequestById(_id);
-            const connected = await db.connectRequest(_id, req.user.kerb);
+            const connected = await db.connectRequest(_id, req.auth);
             if (!connected) return res.status(409).json({ result: "fail", msg: "This quest is unavailable, expired, or blocked between these users." });
             if (request?.requester) await db.addNotification(request.requester, {
                 type: "accepted", title: "Quest accepted", message: `${req.user.name || req.user.kerb} accepted “${request.description}”.`, requestId: _id,
@@ -654,11 +682,11 @@ function summarizeQuestTitle(description) {
     app.post("/api/requests/:id/progress", async (req, res, next) => {
         if (rateLimited(req, res, "quest-progress", 30)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid request ID" });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid request ID" });
         const stage = req.body.stage;
         if (stage !== "started" && stage !== "picked_up") return res.status(400).json({ msg: "Invalid quest stage" });
         try {
-            const request = await db.updateQuestStage(req.params.id, req.user.kerb, stage);
+            const request = await db.updateQuestStage(req.params.id, req.auth, stage);
             if (!request) return res.status(409).json({ msg: "Could not update this quest stage." });
             if (request.requester) await db.addNotification(request.requester, {
                 type: stage, title: stage === "started" ? "Quest in progress" : "Pickup complete",
@@ -671,9 +699,9 @@ function summarizeQuestTitle(description) {
     app.post("/api/requests/:id/cancel", async (req, res, next) => {
         if (rateLimited(req, res, "quest-cancel", 15)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid request ID" });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid request ID" });
         try {
-            const request = await db.cancelQuest(req.params.id, req.user.kerb);
+            const request = await db.cancelQuest(req.params.id, req.auth);
             if (!request) return res.status(409).json({ msg: "This quest can no longer be cancelled." });
             const isRequester = request.requester === req.user.kerb;
             const recipient = isRequester ? request.helper : request.requester;
@@ -689,12 +717,12 @@ function summarizeQuestTitle(description) {
     app.post("/api/requests/:id/completion", async (req, res, next) => {
         if (rateLimited(req, res, "quest-completion", 15)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
         const description = sanitizeText(req.body?.description, 2000);
         const evidence = sanitizeText(req.body?.evidence, 4000);
         if (!description) return res.status(400).json({ msg: "Describe the completed work before submitting it for review." });
         try {
-            const quest = await db.submitCompletion(req.params.id, req.user.kerb, description, evidence);
+            const quest = await db.submitCompletion(req.params.id, req.auth, description, evidence);
             if (!quest) return res.status(409).json({ msg: "Only the assigned completer can submit completion while the quest is in progress." });
             await db.addNotification(quest.requester, { type: "pending_review", title: "Quest ready for review", message: `${req.user.name || req.user.kerb} submitted completion for “${quest.title ?? quest.description}”.`, requestId: req.params.id });
             res.json({ result: "success", status: quest.status });
@@ -704,9 +732,9 @@ function summarizeQuestTitle(description) {
     app.post("/api/requests/:id/approve-completion", async (req, res, next) => {
         if (rateLimited(req, res, "quest-approval", 15)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
         try {
-            const quest = await db.approveCompletion(req.params.id, req.user.kerb);
+            const quest = await db.approveCompletion(req.params.id, req.auth);
             if (!quest) return res.status(409).json({ msg: "Only the requester can approve a submitted completion." });
             await db.addNotification(quest.helper, { type: "awaiting_payment", title: "Completion approved", message: `The requester approved “${quest.title ?? quest.description}”. Arrange the external reward payment.`, requestId: req.params.id });
             res.json({ result: "success", status: quest.status });
@@ -716,9 +744,9 @@ function summarizeQuestTitle(description) {
     app.post("/api/requests/:id/payment-sent", async (req, res, next) => {
         if (rateLimited(req, res, "payment-sent", 15)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
         try {
-            const quest = await db.markPaymentSent(req.params.id, req.user.kerb);
+            const quest = await db.markPaymentSent(req.params.id, req.auth);
             if (!quest) return res.status(409).json({ msg: "Only the requester can mark payment sent after approving completion." });
             await db.addNotification(quest.helper, { type: "payment_sent", title: "Requester says payment was sent", message: `The requester marked the reward as sent for “${quest.title ?? quest.description}”. Confirm only after you receive it.`, requestId: req.params.id });
             res.json({ result: "success", status: quest.status, verified: false });
@@ -728,9 +756,9 @@ function summarizeQuestTitle(description) {
     app.post("/api/requests/:id/confirm-payment", async (req, res, next) => {
         if (rateLimited(req, res, "payment-confirmation", 15)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
         try {
-            const quest = await db.confirmPaymentReceived(req.params.id, req.user.kerb);
+            const quest = await db.confirmPaymentReceived(req.params.id, req.auth);
             if (!quest) return res.status(409).json({ msg: "Only the assigned completer can confirm receipt after payment was marked sent." });
             await db.addNotification(quest.requester, { type: "completed", title: "Payment receipt confirmed", message: `The completer confirmed receiving the external reward for “${quest.title ?? quest.description}”.`, requestId: req.params.id });
             res.json({ result: "success", status: quest.status, selfReportedByCompleter: true });
@@ -740,13 +768,13 @@ function summarizeQuestTitle(description) {
     app.post("/api/requests/:id/disputes", async (req, res, next) => {
         if (rateLimited(req, res, "quest-dispute", 10, 60 * 60 * 1000)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
         const { reason } = req.body ?? {};
         const description = sanitizeText(req.body?.description, 2000);
         const evidence = sanitizeText(req.body?.evidence, 4000);
         if (!DBController.DISPUTE_REASONS.includes(reason) || !description) return res.status(400).json({ msg: "Choose a dispute reason and explain the issue." });
         try {
-            const dispute = await db.openDispute(req.params.id, req.user.kerb, reason, description, evidence);
+            const dispute = await db.openDispute(req.params.id, req.auth, reason, description, evidence);
             if (!dispute) return res.status(409).json({ msg: "Only quest participants can dispute an active transaction." });
             const other = dispute.reporter === dispute.requester ? dispute.completer : dispute.requester;
             await db.addNotification(other, { type: "disputed", title: "Quest disputed", message: `A participant opened a dispute for quest ${req.params.id}.`, requestId: req.params.id });
@@ -757,12 +785,12 @@ function summarizeQuestTitle(description) {
     app.post("/api/quests/:id/reviews", async (req, res, next) => {
         if (rateLimited(req, res, "quest-review", 20)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
         const ratings = req.body?.ratings;
         const text = sanitizeText(req.body?.text, 1000);
         if (!ratings || typeof ratings !== "object" || Array.isArray(ratings) || Object.values(ratings).some(value => !Number.isInteger(value) || value < 1 || value > 5)) return res.status(400).json({ msg: "Use a 1–5 star rating for each category." });
         try {
-            const review = await db.submitReview(req.params.id, req.user.kerb, ratings, text);
+            const review = await db.submitReview(req.params.id, req.auth, ratings, text);
             if (!review) return res.status(403).json({ msg: "Reviews are available to the two participants after payment receipt is confirmed." });
             res.status(201).json({ result: "success", data: { id: String(review._id), createdAt: review.createdAt } });
         } catch (error) {
@@ -773,11 +801,11 @@ function summarizeQuestTitle(description) {
 
     app.get("/api/quests/:id/review-status", async (req, res, next) => {
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
         try {
             const quest = await db.getRequestById(req.params.id);
             if (!quest || ![quest.requester, quest.helper].includes(req.user.kerb)) return res.status(403).json({ msg: "Only quest participants can view review status." });
-            res.json({ reviewed: await db.hasReviewed(req.params.id, req.user.kerb) });
+            res.json({ reviewed: await db.hasReviewed(req.params.id, req.auth) });
         } catch (error) { next(error); }
     });
 
@@ -790,14 +818,14 @@ function summarizeQuestTitle(description) {
         const evidence = sanitizeText(req.body?.evidence, 4000);
         if (typeof subject !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(subject) || !DBController.USER_REPORT_REASONS.includes(reason) || !description) return res.status(400).json({ msg: "Choose a reason and describe the report." });
         try {
-            const report = await db.createUserReport(req.user.kerb, subject, reason, description, evidence);
+            const report = await db.createUserReport(req.auth, subject, reason, description, evidence);
             if (!report) return res.status(400).json({ msg: "You cannot report yourself or an unknown user." });
             res.status(201).json({ result: "success", msg: "Report submitted for review. A report alone does not result in an automatic penalty." });
         } catch (error) { next(error); }
     });
 
     app.get("/quests/:id", (req, res) => {
-        if (!/^[0-9a-fA-F]{24}$/.test(req.params.id)) return res.status(404).end();
+        if (!schemas.objectId(req.params.id)) return res.status(404).end();
         res.sendFile(path.resolve("../frontend/index.html"));
     });
 

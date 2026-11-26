@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import useDismissible from "./hooks/useDismissible";
 import DropoffPicker, { type SavedAddress } from "./components/DropoffPicker";
 import ExploreTasks from "./pages/ExploreTasks";
 import ActiveQuest from "./pages/ActiveQuest";
@@ -75,8 +76,12 @@ export default function App() {
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [showAllNotifications, setShowAllNotifications] = useState(false);
   const [notifications, setNotifications] = useState<{ _id: string; type?: string; title: string; message: string; createdAt: string; readAt?: string | null; requestId?: string }[]>([]);
-  const menuRef = useRef<HTMLElement>(null);
-  const userSearchRef = useRef<HTMLFormElement>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+  const notificationTriggerRef = useRef<HTMLButtonElement>(null);
+  const chatTriggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useDismissible<HTMLElement>(menuOpen, () => setMenuOpen(false), "global-popover", [menuTriggerRef]);
+  const userSearchRef = useDismissible<HTMLFormElement>(userSuggestionsOpen, () => setUserSuggestionsOpen(false), "global-popover");
+  const notificationPanelRef = useDismissible<HTMLElement>(notificationOpen, () => setNotificationOpen(false), "global-popover", [notificationTriggerRef]);
   const selectedRequest = requests.find((request) => String(request.id) === String(selectedRequestId))
     ?? (page === "active" ? routeRequest : null)
     ?? (page === "active" ? undefined : requests[0]);
@@ -125,15 +130,6 @@ export default function App() {
   }, [page, selectedRequestId, requests]);
 
   useEffect(() => {
-    if (!menuOpen) return;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (event.target instanceof Node && !menuRef.current?.contains(event.target)) setMenuOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
-    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
-  }, [menuOpen]);
-
-  useEffect(() => {
     const search = userSearchQuery.trim();
     if (search.length < 2) { setUserSuggestions([]); setUserSuggestionsLoading(false); return; }
     const controller = new AbortController();
@@ -146,16 +142,6 @@ export default function App() {
     }, 220);
     return () => { window.clearTimeout(timer); controller.abort(); };
   }, [userSearchQuery]);
-
-  useEffect(() => {
-    if (!userSuggestionsOpen) return;
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      if (event.target instanceof Node && !userSearchRef.current?.contains(event.target)) setUserSuggestionsOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
-    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
-  }, [userSuggestionsOpen]);
-
 
   useEffect(() => {
   if (!isLoggedIn) {
@@ -347,7 +333,8 @@ export default function App() {
       <header className="relative z-50 h-16 border-b border-[#BED8D4] bg-[#F7F9F9]">
         <div className="flex h-full items-center gap-4 px-4 sm:px-6">
           <button
-            onClick={() => setMenuOpen(true)}
+            ref={menuTriggerRef}
+            onClick={() => setMenuOpen(open => !open)}
             className="grid h-10 w-10 place-items-center rounded-md text-[#102A3A] transition hover:bg-[#BED8D4]/35"
             aria-label="Open menu"
           >
@@ -396,11 +383,11 @@ export default function App() {
             </div>}
           </form>
 
-          <button onClick={() => { const nextOpen = !notificationOpen; setNotificationOpen(nextOpen); if (nextOpen) setChatOpen(false); }} className="relative grid h-10 w-10 shrink-0 place-items-center rounded-md text-slate-600 transition hover:bg-[#BED8D4]/30" aria-label="Notifications" aria-expanded={notificationOpen}>
+          <button ref={notificationTriggerRef} onClick={() => { const nextOpen = !notificationOpen; setNotificationOpen(nextOpen); if (nextOpen) setChatOpen(false); }} className="relative grid h-10 w-10 shrink-0 place-items-center rounded-md text-slate-600 transition hover:bg-[#BED8D4]/30" aria-label="Notifications" aria-expanded={notificationOpen}>
             <Icon name="bell" size={19} />
             {notifications.some(item => !item.readAt) && <span className="absolute right-2 top-2 h-2 w-2 rounded-full border-2 border-[#F7F9F9] bg-[#63D2FF]" />}
           </button>
-          <button type="button" aria-label={chatOpen ? "Close chat" : "Open chat"} title="Messages" onClick={() => {
+          <button ref={chatTriggerRef} type="button" aria-label={chatOpen ? "Close chat" : "Open chat"} title="Messages" onClick={() => {
             const nextOpen = !chatOpen;
             setChatOpen(nextOpen);
             if (nextOpen) setNotificationOpen(false);
@@ -421,7 +408,7 @@ export default function App() {
           )}
         </div>
       </header>
-      {notificationOpen && <section aria-label="Notifications" className="fixed right-4 top-[72px] z-[90] max-h-[min(78vh,620px)] w-[min(420px,calc(100vw-2rem))] overflow-y-auto rounded-2xl border border-[#BED8D4] bg-white p-5 shadow-xl">
+      {notificationOpen && <section ref={notificationPanelRef} aria-label="Notifications" className="fixed right-4 top-[72px] z-[90] max-h-[min(78vh,620px)] w-[min(420px,calc(100vw-2rem))] overflow-y-auto rounded-2xl border border-[#BED8D4] bg-white p-5 shadow-xl">
         <div className="mb-3 flex items-center justify-between border-b border-[#D8DEDE] pb-4"><h2 className="text-xl font-bold">Notifications</h2><button type="button" onClick={() => { setNotifications(current => current.map(item => ({ ...item, readAt: item.readAt ?? new Date().toISOString() }))); notifications.filter(item => !item.readAt).forEach(item => { void fetch(`/api/notifications/${item._id}/read`, { method: "PATCH" }); }); }} disabled={!notifications.some(item => !item.readAt)} className="text-sm font-semibold text-[#496A9A] disabled:opacity-50">Mark all as read</button></div>
         {!notifications.length ? <p className="py-5 text-center text-sm text-slate-500">No updates yet.</p> : <div className="divide-y divide-[#D8DEDE]">{(showAllNotifications ? notifications : notifications.slice(0, 3)).map(item => <button key={item._id} type="button" onClick={() => {
           if (!item.readAt) {
@@ -463,6 +450,7 @@ export default function App() {
             { label: "My quests", icon: "bolt" as const, target: "my-quests" as const },
             { label: "Messages", icon: "chat" as const, target: null },
             { label: "Payment settings", icon: "check" as const, target: "wallet" as const },
+            { label: "Settings", icon: "settings" as const, target: "profile" as const },
             ...(isAdmin ? [{ label: "Admin review", icon: "book" as const, target: "admin" as const }] : []),
           ].map((item) => (
             <button
@@ -576,10 +564,10 @@ export default function App() {
 )}
 
 {page === "my-quests" && <MyQuestsPage refreshKey={requestsVersion} editQuestId={questToEditId} onEditOpened={() => setQuestToEditId("")} onPostQuest={() => setPostingRequest(true)} onChanged={() => setRequestsVersion(version => version + 1)} onViewQuest={navigateQuest} />}
-{page === "profile" && <ProfilePage refreshKey={requestsVersion} onPostQuest={() => setPostingRequest(true)} onRequestDeleted={() => setRequestsVersion(version => version + 1)} />}
+{page === "profile" && <ProfilePage />}
       {page === "admin" && isAdmin && <AdminPage />}
 {page === "users" && <UserLookupPage initialQuery={userSearchQuery} searchVersion={userSearchVersion} initialProfileKerb={userProfileKerb} />}
-      <ChatPopup request={requests.find(request => String(request.id) === chatRequestId) ?? (String(routeRequest?.id) === chatRequestId ? routeRequest ?? undefined : undefined)} currentKerb={userKerb} open={chatOpen} onClose={() => setChatOpen(false)} onUnreadChange={setChatUnread} />
+      <ChatPopup request={requests.find(request => String(request.id) === chatRequestId) ?? (String(routeRequest?.id) === chatRequestId ? routeRequest ?? undefined : undefined)} currentKerb={userKerb} open={chatOpen} onClose={() => setChatOpen(false)} onUnreadChange={setChatUnread} triggerRef={chatTriggerRef} />
 
     </div>
   );

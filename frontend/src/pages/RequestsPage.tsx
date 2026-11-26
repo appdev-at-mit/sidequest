@@ -53,10 +53,10 @@ export default function RequestsPage({ requests, query, currentLocation, onViewO
     All: "grid", Delivery: "truck", Moving: "arrow", "Home Help": "home", Tech: "wrench", Academic: "book",
   };
 
-  return <main className="min-h-[calc(100dvh-64px)] overflow-y-auto bg-[#F7F9F9] px-5 py-7 sm:px-8">
+  return <main className="min-h-[calc(100dvh-64px)] overflow-y-auto bg-[#F7F9F9] px-5 pb-7 pt-1 sm:px-8">
     <div className="mx-auto max-w-5xl">
       <div className="border-b border-[#BED8D4] pb-5">
-        <div className="mt-5"><div className="flex flex-wrap gap-3">
+        <div><div className="flex flex-wrap gap-3">
           {availableCategories.map(value => <button key={value} type="button" onClick={() => setCategory(value)} aria-pressed={category === value} className={`flex min-w-[82px] flex-col items-center gap-2 px-4 py-3 text-xs font-semibold transition ${category === value ? "text-[#08679e]" : "text-slate-600 hover:text-[#2081C3]"}`}><Icon name={categoryIcons[value]} size={22} /><span>{value === "All" ? "All quests" : value}</span></button>)}
         </div></div>
         <div className="mt-4">

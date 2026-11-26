@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import Icon from "./Icon";
-import { addressPolicyError, isWithinMITCampus, resolveMITBuildingQuery } from "../data/addressPolicy";
+import useDismissible from "../hooks/useDismissible";
+import { addressPolicyError, isMatchingMITBuilding, isWithinMITCampus, resolveMITBuildingQuery } from "../data/addressPolicy";
+import { inputSchemas } from "../data/validation";
 import "./AddressLookup.css";
 
 export type GeocodedAddress = { address: string; lat: number; lng: number; provider?: string; providerPlaceId?: string; buildingName?: string; roomNumber?: string; title?: string; subtitle?: string };
@@ -37,20 +39,20 @@ type PhotonResponse = { features?: PhotonFeature[] };
 
 const MIT_CENTER = { lat: 42.3585, lng: -71.0935 };
 
-function formatFeature(feature: PhotonFeature, buildingQuery: boolean, originalQuery: string): GeocodedAddress | null {
+function formatFeature(feature: PhotonFeature, buildingQuery: boolean): GeocodedAddress | null {
   const coordinates = feature.geometry?.coordinates;
-  if (!coordinates || !Number.isFinite(coordinates[0]) || !Number.isFinite(coordinates[1])) return null;
+  if (!coordinates || !inputSchemas.coordinates(coordinates[1], coordinates[0])) return null;
   const [lng, lat] = coordinates;
   const properties = feature.properties ?? {};
   const streetAddress = [properties.housenumber, properties.street].filter(Boolean).join(" ");
   const locality = [properties.district, properties.locality, properties.city, properties.county, properties.state, properties.postcode]
     .filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index)
     .join(", ");
-  const title = buildingQuery ? originalQuery.trim() : properties.name || streetAddress || properties.city || properties.state || "Address";
+  const title = buildingQuery ? properties.name || "" : properties.name || streetAddress || properties.city || properties.state || "Address";
   const subtitle = [streetAddress, locality, properties.country].filter(Boolean).join(", ") || properties.name || "";
   const addressParts = [properties.name, streetAddress, locality, properties.country]
     .filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
-  const address = buildingQuery ? originalQuery.trim() : addressParts.join(", ") || subtitle || title;
+  const address = buildingQuery ? [properties.name, subtitle].filter(Boolean).join(", ") : addressParts.join(", ") || subtitle || title;
   const providerPlaceId = properties.osm_type && properties.osm_id != null ? `${properties.osm_type}/${properties.osm_id}` : "";
   return { address, lat, lng, title, subtitle, provider: "photon", providerPlaceId, ...(properties.name ? { buildingName: properties.name } : {}) };
 }
@@ -66,7 +68,7 @@ export default function AddressLookup({ id, label, placeholder, initialValue = "
   const [error, setError] = useState("");
   const [open, setOpen] = useState(initialSuggestions.length > 0);
   const [activeIndex, setActiveIndex] = useState(-1);
-  const rootRef = useRef<HTMLDivElement>(null);
+  const rootRef = useDismissible<HTMLDivElement>(open, () => { setOpen(false); setActiveIndex(-1); }, "address-suggestions");
   const inputRef = useRef<HTMLInputElement>(null);
   const requestVersion = useRef(0);
   const initialSuggestionQuery = useRef(initialValue.trim());
@@ -85,17 +87,6 @@ export default function AddressLookup({ id, label, placeholder, initialValue = "
     setOpen(true);
     setActiveIndex(-1);
   }, [initialSuggestions]);
-
-  useEffect(() => {
-    function closeOnOutsidePointer(event: PointerEvent) {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-        setActiveIndex(-1);
-      }
-    }
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
-    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
-  }, []);
 
   useEffect(() => {
     const value = query.trim();
@@ -139,8 +130,11 @@ export default function AddressLookup({ id, label, placeholder, initialValue = "
         const response = await fetch(`https://photon.komoot.io/api/?${params.toString()}`, { signal: controller.signal, headers: { Accept: "application/geo+json, application/json" } });
         if (!response.ok) throw new Error("Address suggestions are temporarily unavailable.");
         const payload: PhotonResponse = await response.json();
-        const suggestions = (payload.features ?? [])
-          .map(feature => formatFeature(feature, building.isBuilding, value))
+        const buildingFeatures = building.isBuilding
+          ? (payload.features ?? []).filter(feature => isMatchingMITBuilding(feature.properties?.name, value))
+          : payload.features ?? [];
+        const suggestions = buildingFeatures
+          .map(feature => formatFeature(feature, building.isBuilding))
           .filter((address): address is GeocodedAddress => Boolean(address)
             && (!building.isBuilding || isWithinMITCampus(address.lat, address.lng)))
           .sort((a, b) => campusDistance(a) - campusDistance(b));

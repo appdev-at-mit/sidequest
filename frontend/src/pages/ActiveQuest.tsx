@@ -6,6 +6,7 @@ import L from "leaflet";
 
 
 import Icon from "../components/Icon";
+import useDismissible from "../hooks/useDismissible";
 import Avatar from "../components/Avatar";
 
 
@@ -50,6 +51,8 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
   const [mapExpanded, setMapExpanded] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [manageMenuOpen, setManageMenuOpen] = useState(false);
+  const manageMenuRef = useDismissible<HTMLDivElement>(manageMenuOpen, () => setManageMenuOpen(false), "global-popover");
+  const directionsRef = useDismissible<HTMLDivElement>(!directionsCollapsed, () => setDirectionsCollapsed(true), "global-popover");
 
 
   const [routeError, setRouteError] = useState("");
@@ -485,7 +488,7 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
 
 
             <button type="button" onClick={() => setMapExpanded(value => !value)} aria-label={mapExpanded ? "Shrink map" : "Expand map"} className="absolute right-4 top-4 z-[500] rounded-md border border-[#BED8D4] bg-white px-3 py-2 text-xs font-bold text-[#08679e] shadow-sm">{mapExpanded ? "Smaller map" : "Larger map"}</button>
-            {directionsCollapsed ? <button type="button" onClick={() => setDirectionsCollapsed(false)} className="absolute bottom-4 right-4 z-[500] rounded-lg border border-[#BED8D4] bg-white px-4 py-2.5 text-sm font-bold text-[#08679e] shadow-[0_1px_3px_rgba(0,0,0,0.08)]">Directions</button> : <div className="absolute bottom-4 right-4 z-[500] w-[min(320px,calc(100%-32px))] rounded-lg border border-[#BED8D4] bg-white p-1.5 shadow-[0_1px_3px_rgba(0,0,0,0.08)]">
+            {directionsCollapsed ? <button type="button" onClick={() => setDirectionsCollapsed(false)} className="absolute bottom-4 right-4 z-[500] rounded-lg border border-[#BED8D4] bg-white px-4 py-2.5 text-sm font-bold text-[#08679e] shadow-[0_1px_3px_rgba(0,0,0,0.08)]">Directions</button> : <div ref={directionsRef} className="absolute bottom-4 right-4 z-[500] w-[min(320px,calc(100%-32px))] rounded-lg border border-[#BED8D4] bg-white p-1.5 shadow-[0_1px_3px_rgba(0,0,0,0.08)]">
 
 
               <div className="mb-0.5 flex justify-end">
@@ -654,7 +657,7 @@ export default function ActiveQuest({selectedRequest, stage, setStage, currentKe
 
 
                 {stageError && !actionBusy && <p role="alert" className="mr-2 text-sm text-red-700">{stageError}</p>}
-                {isRequester && questStatus === "open" && <div className="relative"><button type="button" aria-label="Quest management" aria-expanded={manageMenuOpen} onClick={() => setManageMenuOpen(open => !open)} className="grid h-10 w-10 place-items-center rounded-md border border-[#BED8D4] text-xl font-bold hover:bg-[#E5F1F3]">⋯</button>{manageMenuOpen && <div className="absolute right-0 top-11 z-20 min-w-40 rounded-lg border border-[#BED8D4] bg-white p-1 shadow-lg">{!selectedRequest.expired && <button type="button" onClick={() => { setManageMenuOpen(false); onEdit?.(); }} className="block w-full rounded px-3 py-2 text-left text-sm font-semibold hover:bg-[#EAF3F2]">Edit quest</button>}<button type="button" onClick={() => { setManageMenuOpen(false); onDelete?.(); }} className="block w-full rounded px-3 py-2 text-left text-sm font-semibold text-red-700 hover:bg-red-50">Delete quest</button></div>}</div>}
+                {isRequester && questStatus === "open" && <div ref={manageMenuRef} className="relative"><button type="button" aria-label="Quest management" aria-expanded={manageMenuOpen} onClick={() => setManageMenuOpen(open => !open)} className="grid h-10 w-10 place-items-center rounded-md border border-[#BED8D4] text-xl font-bold hover:bg-[#E5F1F3]">⋯</button>{manageMenuOpen && <div className="absolute right-0 top-11 z-20 min-w-40 rounded-lg border border-[#BED8D4] bg-white p-1 shadow-lg">{!selectedRequest.expired && <button type="button" onClick={() => { setManageMenuOpen(false); onEdit?.(); }} className="block w-full rounded px-3 py-2 text-left text-sm font-semibold hover:bg-[#EAF3F2]">Edit quest</button>}<button type="button" onClick={() => { setManageMenuOpen(false); onDelete?.(); }} className="block w-full rounded px-3 py-2 text-left text-sm font-semibold text-red-700 hover:bg-red-50">Delete quest</button></div>}</div>}
                 {!isRequester && !isHelper && questStatus === "open" && !selectedRequest.expired && <button type="button" onClick={() => onAccept?.()} className="inline-flex min-h-12 items-center justify-center rounded-md bg-[#2081C3] px-5 py-3 text-sm font-bold text-white hover:bg-[#176FA9]">Accept quest</button>}
                 {(isRequester || isHelper) && ["in_progress", "pending_review", "awaiting_payment"].includes(questStatus) && <button type="button" disabled={actionBusy !== null} onClick={() => { void cancelQuest(); }} className="inline-flex min-h-12 min-w-32 items-center justify-center gap-2 rounded-md border border-[#BED8D4] px-4 py-3 text-sm font-bold text-slate-600 hover:bg-[#E5F1F3] disabled:opacity-70">
                   {actionBusy === "cancel" ? <span role="status" aria-label="Cancelling" className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" /> : "Cancel quest"}

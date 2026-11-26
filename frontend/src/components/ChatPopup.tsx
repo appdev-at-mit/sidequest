@@ -1,15 +1,17 @@
 import { useEffect, useState } from "react";
+import type { RefObject } from "react";
 import type { FormEvent } from "react";
 import Avatar from "./Avatar";
 import Icon from "./Icon";
+import useDismissible from "../hooks/useDismissible";
 import type { Request } from "../data/requests";
 import "./ChatPopup.css";
 
 type Message = { sender: string; text: string; createdAt: string; own?: boolean };
 type InboxItem = { request: Request; counterpart: string; preview: string; updatedAt: string | null };
-type Props = { request?: Request; currentKerb: string; open: boolean; onClose: () => void; onUnreadChange: (unread: boolean) => void };
+type Props = { request?: Request; currentKerb: string; open: boolean; onClose: () => void; onUnreadChange: (unread: boolean) => void; triggerRef: RefObject<HTMLButtonElement | null> };
 
-export default function ChatPopup({ request: routedRequest, currentKerb, open, onClose, onUnreadChange }: Props) {
+export default function ChatPopup({ request: routedRequest, currentKerb, open, onClose, onUnreadChange, triggerRef }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inbox, setInbox] = useState<InboxItem[]>([]);
   const [inboxSearch, setInboxSearch] = useState("");
@@ -18,6 +20,7 @@ export default function ChatPopup({ request: routedRequest, currentKerb, open, o
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [unread, setUnread] = useState(false);
+  const chatRef = useDismissible<HTMLElement>(open, onClose, "global-popover", [triggerRef]);
   const request = routedRequest ?? inbox.find(item => String(item.request.id) === activeQuestId)?.request;
   const key = request ? `sidequest-chat-read-${request.id}` : "";
 
@@ -91,7 +94,7 @@ export default function ChatPopup({ request: routedRequest, currentKerb, open, o
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not send this message."); }
   }
 
-  return <section role="dialog" aria-label={request ? `Chat about ${request.title}` : "Messages"} aria-hidden={!open} className={`chat-popover ${open ? "chat-popover-open" : "chat-popover-closed"}`}>
+  return <section ref={chatRef} role="dialog" aria-label={request ? `Chat about ${request.title}` : "Messages"} aria-hidden={!open} className={`chat-popover ${open ? "chat-popover-open" : "chat-popover-closed"}`}>
     <header className="flex items-center gap-3 border-b border-[#BED8D4] bg-white px-4 py-3">
       {request && !routedRequest && <button type="button" aria-label="Back to messages" onClick={() => { setActiveQuestId(""); setError(""); }} className="rounded-md p-1 hover:bg-[#BED8D4]/30"><Icon name="arrow" size={18} /></button>}
       {request && <Avatar initials={request.poster.slice(0, 1).toUpperCase()} />}

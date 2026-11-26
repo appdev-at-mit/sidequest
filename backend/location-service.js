@@ -1,4 +1,5 @@
 const { createHash } = require("node:crypto");
+const { schemas } = require("./validation.js");
 require("dotenv").config();
 
 const PHOTON_API = process.env.PHOTON_API_URL || "https://photon.komoot.io/api/";
@@ -21,7 +22,7 @@ function toLocation(feature, roomNumber = "") {
         .filter((part, index, all) => part && all.indexOf(part) === index).join(", ");
     const formattedAddress = [properties.name, street, locality, properties.country]
         .filter((part, index, all) => part && all.indexOf(part) === index).join(", ") || clean(properties.name);
-    if (!formattedAddress) return null;
+    if (!formattedAddress || !schemas.roomNumber(roomNumber)) return null;
     const buildingName = clean(properties.name, 120);
     const providerPlaceId = properties.osm_type && properties.osm_id != null ? `${properties.osm_type}/${properties.osm_id}` : "";
     return {
@@ -42,9 +43,8 @@ function distanceFromMIT(location) {
 function normalizeStructuredLocation(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const formattedAddress = clean(value.formattedAddress ?? value.address);
-    const lat = Number(value.lat);
-    const lng = Number(value.lng);
-    if (!formattedAddress || !Number.isFinite(lat) || lat < -90 || lat > 90 || !Number.isFinite(lng) || lng < -180 || lng > 180) return null;
+    const { lat, lng } = value;
+    if (!formattedAddress || !schemas.latitude(lat) || !schemas.longitude(lng) || !schemas.roomNumber(value.roomNumber)) return null;
     return {
         formattedAddress,
         lat,

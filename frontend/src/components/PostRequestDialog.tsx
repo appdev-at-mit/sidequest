@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import Icon from "./Icon";
 import AddressLookup, { type GeocodedAddress } from "./AddressLookup";
 import { addressPolicyError } from "../data/addressPolicy";
+import { inputSchemas, MAX_REWARD_CENTS } from "../data/validation";
 import "./PostRequestDialog.css";
 
 type Props = { onClose: () => void; onPosted: () => void };
@@ -90,13 +91,18 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
     if (busy) return;
     const fields = new FormData(event.currentTarget);
     const pay = Number(fields.get("pay"));
-    if (!Number.isFinite(pay) || pay < 3) { setError("The reward must be at least $3."); return; }
-    const start = new Date(`${fields.get("startDate")}T${fields.get("startTime")}`);
+    if (!Number.isFinite(pay) || pay < 3 || !inputSchemas.rewardCents(Math.round(pay * 100))) { setError(`The reward must be between $3.00 and $${(MAX_REWARD_CENTS / 100).toFixed(2)}.`); return; }
+    if (!inputSchemas.boundedText(String(fields.get("description") ?? ""), 150)) { setError("Enter a quest description under 150 characters."); return; }
+    const start = new Date();
     const end = new Date(`${fields.get("endDate")}T${fields.get("endTime")}`);
-    if (!(end > start)) { setError("Choose a deadline after the start time."); return; }
+    if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())
+      || !inputSchemas.isoDateTime(start.toISOString()) || !inputSchemas.isoDateTime(end.toISOString())
+      || !(end > start)) { setError("Choose a future deadline."); return; }
     if (!pickup || !dropoff) { setError("Search for and select valid pickup and drop-off addresses."); return; }
     const pickupLocation = { ...pickup, roomNumber: pickupRoom.trim() || undefined };
     const dropoffLocation = { ...dropoff, roomNumber: dropoffRoom.trim() || undefined };
+    if (!inputSchemas.roomNumber(pickupRoom.trim()) || !inputSchemas.roomNumber(dropoffRoom.trim())) { setError("Enter a valid room number using letters, numbers, spaces, #, /, or hyphens."); return; }
+    if (!inputSchemas.coordinates(pickup.lat, pickup.lng) || !inputSchemas.coordinates(dropoff.lat, dropoff.lng)) { setError("Choose valid pickup and drop-off locations from the suggestions."); return; }
     const pickupAddress = [pickup.address, pickupRoom.trim() ? `Room ${pickupRoom.trim()}` : ""].filter(Boolean).join(", ");
     const dropoffAddress = [dropoff.address, dropoffRoom.trim() ? `Room ${dropoffRoom.trim()}` : ""].filter(Boolean).join(", ");
     const policyError = addressPolicyError(pickupAddress) || addressPolicyError(dropoffAddress);
@@ -124,7 +130,7 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
   }
 
   return <dialog ref={dialog} aria-labelledby="post-request-title"
-    onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}
+    onCancel={event => event.preventDefault()}
     className="post-request-dialog m-auto max-h-[calc(100dvh-4rem)] w-[calc(100%-2rem)] max-w-lg overflow-auto rounded-2xl border border-[#BED8D4] bg-[#F7F9F9] p-5 text-[#102A3A] shadow-xl backdrop:bg-[#102A3A]/50 sm:p-7">
     <div className="mb-5 flex items-center justify-between gap-4">
       <h2 id="post-request-title" className="text-2xl font-extrabold">Post a quest</h2>
@@ -153,22 +159,22 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
           }} />
           {photoData && <img src={photoData} alt="Selected quest photo preview" className="mt-2 max-h-32 rounded-lg object-cover" />}
         </div>
-        <div className="flex items-center gap-2"><label htmlFor="quest-reward" className="text-sm font-semibold">Reward</label><input id="quest-reward" name="pay" className="block w-24 rounded-lg border border-[#BED8D4] bg-white p-2.5" type="number" min="3" step="0.01" required /></div>
+        <div className="flex items-center gap-2"><label htmlFor="quest-reward" className="text-sm font-semibold">Reward</label><input id="quest-reward" name="pay" className="block w-24 rounded-lg border border-[#BED8D4] bg-white p-2.5" type="number" min="3" max={(MAX_REWARD_CENTS / 100).toFixed(2)} step="0.01" required /></div>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        {([{ label: "Starts at", dateName: "startDate", timeName: "startTime" }, { label: "Deadline", dateName: "endDate", timeName: "endTime" }] as const).map(field => <fieldset key={field.dateName} className="min-w-0">
-          <legend className="text-sm font-semibold">{field.label}</legend>
-          <label className="mt-1 block text-xs font-medium text-slate-600">Date<input name={field.dateName} className={inputClass} type="date" onFocus={event => event.currentTarget.showPicker?.()} required /></label>
-          <label className="mt-2 block text-xs font-medium text-slate-600">Time<select name={field.timeName} className={inputClass} defaultValue="" required><option value="" disabled>Select a time</option>{timeOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
-        </fieldset>)}
-      </div>
+      <fieldset className="min-w-0">
+        <legend className="text-sm font-semibold">Deadline</legend>
+        <div className="mt-1 grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label className="block text-xs font-medium text-slate-600">Date<input name="endDate" className={inputClass} type="date" onFocus={event => event.currentTarget.showPicker?.()} required /></label>
+          <label className="block text-xs font-medium text-slate-600">Time<select name="endTime" className={inputClass} defaultValue="" required><option value="" disabled>Select a time</option>{timeOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
+        </div>
+      </fieldset>
       <div className="grid gap-2">
         <AddressLookup id="request-dropoff" label="Drop-off address" placeholder="Street address or MIT building (e.g. W20 or 7 and 10)" initialValue={dropoffPrefill.text} initialAddress={resolvedDropoffPrefill ?? dropoffPrefill.address} initialSuggestions={legacyDropoffSuggestions} onSelect={address => { if (!address) dropoffEdited.current = true; else { dropoffEdited.current = true; setError(""); } setDropoff(address); }} />
-        <label htmlFor="request-dropoff-room" className="text-xs font-medium text-slate-600">Room number (optional)<input id="request-dropoff-room" value={dropoffRoom} onChange={event => setDropoffRoom(event.target.value)} className="mt-1 block w-full rounded-lg border border-[#BED8D4] bg-white p-2.5 text-sm" maxLength={20} placeholder="e.g. 407" /></label>
+        <label htmlFor="request-dropoff-room" className="text-xs font-medium text-slate-600">Room number (optional)<input id="request-dropoff-room" value={dropoffRoom} onChange={event => setDropoffRoom(event.target.value)} className="mt-1 block w-full rounded-lg border border-[#BED8D4] bg-white p-2.5 text-sm" maxLength={30} placeholder="e.g. 407" /></label>
       </div>
       <div className="grid gap-2">
         <AddressLookup id="request-pickup" label="Pickup address" placeholder="Street address or MIT building (e.g. W20 or 7 and 10)" onSelect={setPickup} />
-        <label htmlFor="request-pickup-room" className="text-xs font-medium text-slate-600">Room number (optional)<input id="request-pickup-room" value={pickupRoom} onChange={event => setPickupRoom(event.target.value)} className="mt-1 block w-full rounded-lg border border-[#BED8D4] bg-white p-2.5 text-sm" maxLength={20} placeholder="e.g. 407" /></label>
+        <label htmlFor="request-pickup-room" className="text-xs font-medium text-slate-600">Room number (optional)<input id="request-pickup-room" value={pickupRoom} onChange={event => setPickupRoom(event.target.value)} className="mt-1 block w-full rounded-lg border border-[#BED8D4] bg-white p-2.5 text-sm" maxLength={30} placeholder="e.g. 407" /></label>
       </div>
       <p className="-mt-2 text-xs text-slate-500">Choose a publicly accessible address. Residence hall meetups should be at the lobby or front desk.</p>
       {error && <p role="alert" className="text-sm font-semibold text-red-700">{error}</p>}

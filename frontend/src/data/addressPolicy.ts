@@ -32,7 +32,20 @@ export function resolveMITBuildingQuery(value: string): { query: string; isBuild
   const buildingIds = [match[1], match[2]].filter((id): id is string => Boolean(id));
   const invalidNumber = buildingIds.some(id => /^\d+$/.test(id) && (Number(id) < 1 || Number(id) > 76));
   if (invalidNumber) return { query: value, isBuilding: true, error: "Enter an MIT building number from 1 to 76, or a campus building code such as W20." };
+  if (buildingIds.length > 1) return { query: value, isBuilding: true, error: "Search for one MIT building at a time." };
   return { query: `MIT Building ${buildingIds[0]}, Cambridge, Massachusetts`, isBuilding: true, error: null };
+}
+
+/** Photon can return nearby street addresses for a building query. Only accept
+ * a result whose own feature name explicitly identifies the requested building. */
+export function isMatchingMITBuilding(name: string | undefined, query: string): boolean {
+  if (!name) return false;
+  const requested = query.trim().match(/^(?:(?:MIT\s+)?building\s+#?)?([A-Z]{1,2}\d{1,3}|\d{1,3})/i)?.[1];
+  if (!requested) return false;
+  const normalizedName = name.trim().replace(/\s+/g, " ").toLowerCase();
+  const normalizedId = requested.toLowerCase();
+  const normalizedBuildingName = normalizedName.replace(/^mit\s+/, "").replace(/^building\s+#?/, "");
+  return normalizedBuildingName === normalizedId || normalizedName === `building ${normalizedId}`;
 }
 
 export function isWithinMITCampus(lat: number, lng: number): boolean {

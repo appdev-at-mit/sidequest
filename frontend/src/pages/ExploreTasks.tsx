@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import Icon from "../components/Icon";
 import QuestCountdown from "../components/QuestCountdown";
+import useDismissible from "../hooks/useDismissible";
 import { CAMBRIDGE_CENTER, MAP_TILE_URL, MAP_TILE_OPTIONS } from "../data/requests";
 import type { Request } from "../data/requests";
 import "./ExploreTasks.css";
@@ -26,6 +27,12 @@ export default function ExploreTasks({
   const [requestOpen, setRequestOpen] = useState(false);
   const [mapViewVersion, setMapViewVersion] = useState(0);
   const [clusterRequests, setClusterRequests] = useState<Request[] | null>(null);
+  const requestPanelOpen = requestOpen && Boolean(clusterRequests || requests.some(request => request.id === selectedRequestId));
+  const requestPanelRef = useDismissible<HTMLElement>(requestPanelOpen, () => {
+    setRequestOpen(false);
+    setClusterRequests(null);
+    setSelectedRequestId("");
+  }, "global-popover");
 
   const mapElement = useRef<HTMLDivElement>(null);
   const leafletMap = useRef<L.Map | null>(null);
@@ -195,7 +202,7 @@ export default function ExploreTasks({
       </div>
 
       {requestOpen && clusterRequests && (
-        <aside role="dialog" aria-label="Requests in this area" className="absolute inset-y-0 right-0 z-40 flex w-full max-w-[400px] flex-col bg-transparent">
+        <aside ref={requestPanelRef} role="dialog" aria-label="Requests in this area" className="absolute inset-y-0 right-0 z-40 flex w-full max-w-[400px] flex-col bg-transparent">
           <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
             <div className="flex flex-col gap-3">
               {clusterRequests.map(request => <button key={request.id} onClick={() => { setSelectedRequestId(request.id); setClusterRequests(null); if (typeof request.lat === "number" && typeof request.lng === "number") leafletMap.current?.setView([request.lat, request.lng], Math.max(leafletMap.current.getZoom(), 17), { animate: true }); }} className="w-full overflow-hidden rounded-xl border border-[#BED8D4] bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-[#2081C3] hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#2081C3]">
@@ -209,12 +216,12 @@ export default function ExploreTasks({
         </aside>
       )}
       {requestOpen && selectedRequest && !clusterRequests && (
-        <div className="fixed inset-x-0 bottom-0 top-16 z-40 flex items-center justify-center bg-[#102A3A]/35 p-3 sm:p-4" onMouseDown={event => { if (event.target === event.currentTarget) setRequestOpen(false); }}>
+        <div className="fixed inset-x-0 bottom-0 top-16 z-40 flex items-center justify-center bg-[#102A3A]/35 p-3 sm:p-4">
         <section
+          ref={requestPanelRef}
           role="dialog"
           aria-modal="true"
           aria-label="Quest details"
-          onKeyDown={event => { if (event.key === "Escape") setRequestOpen(false); }}
           className="relative flex max-h-[min(680px,calc(100dvh-5rem))] w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-[#BED8D4] bg-[#F7F9F9] text-[#102A3A] shadow-2xl"
         >
           <div className="relative min-h-0 flex-1 overflow-y-auto p-5 pt-4 sm:p-7">

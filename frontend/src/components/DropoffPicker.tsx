@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import L from "leaflet";
 import Icon from "./Icon";
+import useDismissible from "../hooks/useDismissible";
 import { MAP_TILE_URL, MAP_TILE_OPTIONS } from "../data/requests";
-import { addressPolicyError, isWithinMITCampus, resolveMITBuildingQuery } from "../data/addressPolicy";
+import { addressPolicyError, isMatchingMITBuilding, isWithinMITCampus, resolveMITBuildingQuery } from "../data/addressPolicy";
 import "./DropoffPicker.css";
 
 type BuildingType = "House" | "Apartment" | "Office" | "Hotel" | "Other";
@@ -33,20 +34,9 @@ export default function DropoffPicker({ onClose, onSelectAddress }: Props) {
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [error, setError] = useState("");
   const preview = useRef<HTMLDivElement>(null);
-  const searchArea = useRef<HTMLDivElement>(null);
+  const searchArea = useDismissible<HTMLDivElement>(suggestionsOpen, () => { setSuggestionsOpen(false); setActiveSuggestion(-1); }, "address-suggestions");
   const searchInput = useRef<HTMLInputElement>(null);
   const requestVersion = useRef(0);
-
-  useEffect(() => {
-    function closeOnOutsidePointer(event: PointerEvent) {
-      if (!searchArea.current?.contains(event.target as Node)) {
-        setSuggestionsOpen(false);
-        setActiveSuggestion(-1);
-      }
-    }
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
-    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer);
-  }, []);
 
   useEffect(() => {
     const value = query.trim();
@@ -64,14 +54,17 @@ export default function DropoffPicker({ onClose, onSelectAddress }: Props) {
         const response = await fetch(`https://photon.komoot.io/api/?${params.toString()}`, { signal: controller.signal, headers: { Accept: "application/geo+json, application/json" } });
         if (!response.ok) throw new Error("Search unavailable");
         const payload: { features?: PhotonFeature[] } = await response.json();
-        const suggestions = (payload.features ?? []).map(feature => {
+        const buildingFeatures = building.isBuilding
+          ? (payload.features ?? []).filter(feature => isMatchingMITBuilding(feature.properties?.name, value))
+          : payload.features ?? [];
+        const suggestions = buildingFeatures.map(feature => {
           const properties = feature.properties ?? {};
           const [lng, lat] = feature.geometry?.coordinates ?? [NaN, NaN];
           const street = [properties.housenumber, properties.street].filter(Boolean).join(" ");
           const details = [street, properties.district, properties.city, properties.county, properties.state, properties.postcode, properties.country].filter((part, index, parts): part is string => Boolean(part) && parts.indexOf(part) === index).join(", ");
-          const suggestionTitle = building.isBuilding ? value : properties.name || street || details;
+          const suggestionTitle = properties.name || street || details;
           const suggestionSubtitle = details || properties.country || "";
-          const address = building.isBuilding ? value : [suggestionTitle, suggestionSubtitle].filter(Boolean).join(", ");
+          const address = [suggestionTitle, suggestionSubtitle].filter(Boolean).join(", ");
           const providerPlaceId = properties.osm_type && properties.osm_id != null ? `${properties.osm_type}/${properties.osm_id}` : "";
           return { id: crypto.randomUUID(), address, label: "Home", instructions: "", buildingType: "Other" as BuildingType, lat, lng, provider: "photon", providerPlaceId, ...(properties.name ? { buildingName: properties.name } : {}), suggestionTitle, suggestionSubtitle };
         }).filter(item => Number.isFinite(item.lat) && Number.isFinite(item.lng) && (!building.isBuilding || isWithinMITCampus(item.lat, item.lng)))
@@ -216,7 +209,7 @@ export default function DropoffPicker({ onClose, onSelectAddress }: Props) {
     }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 });
   }
 
-  return <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#102A3A]/35 p-4" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+  return <div className="fixed inset-0 z-[100] flex items-center justify-center bg-[#102A3A]/35 p-4" onMouseDown={event => { if (!detail && event.target === event.currentTarget) onClose(); }}>
     <section role="dialog" aria-modal="true" aria-labelledby="dropoff-title" className="dropoff-drawer flex h-[min(760px,calc(100dvh-2rem))] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-[#BED8D4] bg-[#F7F9F9] text-[#102A3A] shadow-2xl">
       <header className="flex items-center justify-between border-b border-[#BED8D4] px-5 py-4">
         <div className="flex items-center gap-3">{detail && <button type="button" onClick={() => { setDetail(null); setError(""); }} aria-label="Back to saved addresses" className="rounded-[5px] p-2 hover:bg-[#BED8D4]/40"><Icon name="arrow" /></button>}<h2 id="dropoff-title" className="text-xl font-extrabold">{detail ? "Address details" : "Drop-off location"}</h2></div>

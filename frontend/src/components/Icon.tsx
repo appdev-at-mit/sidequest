@@ -17,6 +17,7 @@ export type IconName =
   | "minus"
   | "moon"
   | "search"
+  | "settings"
   | "send"
   | "star"
   | "sun"
@@ -65,6 +66,7 @@ export default function Icon({ name, size = 20 }: { name: IconName; size?: numbe
         <path d="m20 20-4-4" />
       </>
     ),
+    settings: <><path d="M4 6h8m4 0h4M4 18h4m4 0h8" /><circle cx="14" cy="6" r="2" /><circle cx="10" cy="18" r="2" /></>,
     send: <path d="m22 2-7 20-4-9-9-4Z M22 2 11 13" />,
     star: <path d="m12 2 3 6 6.5 1-4.75 4.6 1.1 6.4L12 17l-5.85 3 1.1-6.4L2.5 9 9 8Z" />,
     sun: (

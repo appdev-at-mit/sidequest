@@ -67,7 +67,7 @@ export default function SignIn() {
     <main className="landing-page">
       <header className="landing-header">
         <a className="landing-brand" href="/" aria-label="SideQuest home">
-          <span className="landing-brand-mark">↗</span><span>sidequest</span>
+          <span className="landing-brand-mark" aria-hidden="true">→</span><span>sidequest</span>
         </a>
         <button type="button" className="landing-header-login" onClick={() => setShowLogin(true)}>Log in</button>
       </header>
@@ -82,7 +82,7 @@ export default function SignIn() {
           SideQuest account
         </button>
       </section>
-      {showLogin && <div className="landing-login-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !busy) setShowLogin(false); }}>
+      {showLogin && <div className="landing-login-backdrop">
         <section role="dialog" aria-modal="true" aria-labelledby="login-title" className="landing-login-dialog">
           <button type="button" className="landing-dialog-close" aria-label="Close login" onClick={() => setShowLogin(false)}>×</button>
           <p className="landing-dialog-eyebrow">SIDEQUEST ACCOUNT</p>
@@ -99,6 +99,13 @@ export default function SignIn() {
         </section>
       </div>}
       <div className="landing-ground" aria-hidden="true" />
+      <footer className="landing-footer">
+        <nav aria-label="Footer" className="landing-footer-links">
+          <a href="#terms">Terms of condition</a><span aria-hidden="true">·</span>
+          <a href="#help">Help</a><span aria-hidden="true">·</span>
+          <a href="#faq">FAQ</a>
+        </nav>
+      </footer>
     </main>
   );
 }

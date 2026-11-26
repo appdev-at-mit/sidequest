@@ -29,7 +29,7 @@ export default function WalletPage() {
       });
       const result = await response.json().catch(() => null);
       if (!response.ok) throw new Error(result?.msg ?? "Could not save your payment preference.");
-      setNotice("Payment preference saved. It will be locked into the next quest acceptance agreement.");
+      setNotice("Payment preference saved.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save your payment preference."); }
     finally { setBusy(false); }
   }

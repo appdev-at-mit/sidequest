@@ -28,7 +28,7 @@ export default function FeedbackDialog({ onClose }: { onClose: () => void }) {
     }
   }
 
-  return <div className="fixed inset-0 z-[110] grid place-items-center bg-[#102A3A]/45 p-4" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+  return <div className="fixed inset-0 z-[110] grid place-items-center bg-[#102A3A]/45 p-4">
     <section role="dialog" aria-modal="true" aria-labelledby="feedback-title" className="w-full max-w-lg rounded-2xl border border-[#BED8D4] bg-[#F7F9F9] p-6 text-[#102A3A] shadow-2xl">
       <div className="mb-5 flex items-center justify-between">
         <h2 id="feedback-title" className="text-2xl font-extrabold">Send feedback</h2>
