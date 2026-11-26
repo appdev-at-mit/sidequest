@@ -378,7 +378,7 @@ export default function App() {
               placeholder="Search users by name or username"
               className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
             />
-            {userSuggestionsOpen && userSearchQuery.trim().length >= 2 && <div id="user-search-suggestions" role="listbox" aria-label="Matching user profiles" className="absolute left-0 right-0 top-12 z-[100] overflow-hidden rounded-xl border border-[#BED8D4] bg-white py-1 shadow-xl">
+            {userSuggestionsOpen && userSearchQuery.trim().length >= 2 && <div id="user-search-suggestions" role="listbox" aria-label="Matching user profiles" className="absolute left-0 right-0 top-full z-[100] overflow-hidden rounded-b-xl rounded-t-none border border-[#BED8D4] bg-white py-1 shadow-xl">
               {userSuggestions.length ? userSuggestions.map(user => <button key={user.kerb} type="button" role="option" aria-selected="false" onClick={() => {
                 setUserSearchQuery(user.kerb);
                 setUserProfileKerb(user.kerb);

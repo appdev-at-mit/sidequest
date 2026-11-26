@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { addressPolicyError, isWithinMITCampus, resolveMITBuildingQuery } from "../data/addressPolicy";
+import "./AddressLookup.css";
 
 export type GeocodedAddress = { address: string; lat: number; lng: number };
 
@@ -50,11 +51,11 @@ export default function AddressLookup({ id, label, placeholder, initialValue = "
 
   return <div>
     <label htmlFor={id} className="text-sm font-semibold">{label}</label>
-    <div role="search" className="mt-1 flex gap-2 rounded-lg border border-[#BED8D4] bg-white p-1 focus-within:border-[#2081C3]">
-      <input id={id} value={query} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); void search(); } }} onChange={event => { setQuery(event.target.value); setResults([]); onSelect(null); setError(""); }} className="min-w-0 flex-1 bg-transparent px-2.5 py-2 outline-none" placeholder={placeholder} maxLength={200} />
-      <button type="button" onClick={() => void search()} disabled={busy || !query.trim()} className="shrink-0 rounded-md bg-[#08679e] px-3 text-sm font-bold text-white hover:bg-[#075785] disabled:opacity-50">{busy ? "Searching…" : "Search"}</button>
-    </div>
-    {results.length > 1 && <ul className="mt-2 max-h-36 overflow-auto rounded-lg border border-[#BED8D4] bg-white" aria-label={`${label} matches`}>
+    <form role="search" onSubmit={event => { event.preventDefault(); void search(); }} className={`mt-1 flex rounded-lg border border-[#BED8D4] bg-white p-1 focus-within:border-[#2081C3] ${results.length > 1 ? "rounded-b-none" : ""}`}>
+      <input id={id} value={query} onChange={event => { setQuery(event.target.value); setResults([]); onSelect(null); setError(""); }} className="address-lookup-input min-w-0 flex-1 bg-white px-2.5 py-2 outline-none" placeholder={placeholder} maxLength={200} aria-label={`${label}; press Enter to search`} />
+      <button type="submit" disabled={busy || !query.trim()} className="shrink-0 rounded-md bg-[#08679e] px-3 text-sm font-bold text-white hover:bg-[#075785] disabled:opacity-50">{busy ? "Searching…" : "Search"}</button>
+    </form>
+    {results.length > 1 && <ul className="-mt-px max-h-36 overflow-auto rounded-b-lg border border-[#BED8D4] bg-white" aria-label={`${label} matches`}>
       {results.map(result => <li key={`${result.lat},${result.lng}`}><button type="button" onClick={() => choose(result)} className="w-full border-b border-[#BED8D4]/60 px-3 py-2 text-left text-sm last:border-0 hover:bg-[#E8F2F1]">{result.address}</button></li>)}
     </ul>}
     {error && <p role="alert" className="mt-1 text-xs text-red-700">{error}</p>}

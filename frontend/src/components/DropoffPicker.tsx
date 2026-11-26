@@ -177,14 +177,13 @@ export default function DropoffPicker({ onClose, onSelectAddress }: Props) {
         </label>
         {error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}
       </div> : <div className="flex flex-1 flex-col overflow-y-auto p-5">
-        <form onSubmit={event => { event.preventDefault(); void findAddress(); }} className="rounded-[5px] border border-[#BED8D4] bg-white p-1.5 focus-within:border-[#2081C3]">
+        <form onSubmit={event => { event.preventDefault(); void findAddress(); }} className={`rounded-[5px] border border-[#BED8D4] bg-white p-1.5 focus-within:border-[#2081C3] ${matches.length ? "rounded-b-none" : ""}`}>
           <div className="flex gap-2">
             <input value={query} onChange={event => { setQuery(event.target.value); setMatches([]); setError(""); }} placeholder="Search an address or building" className="min-w-0 flex-1 bg-transparent px-2.5 py-2 text-sm outline-none" />
             <button disabled={busy || suggestionsLoading || !query.trim()} className="flex min-w-[92px] items-center justify-center gap-2 rounded-[4px] bg-[#08679e] px-3 text-sm font-bold text-white disabled:opacity-60">{(busy || suggestionsLoading) && <span aria-hidden="true" className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />}{busy || suggestionsLoading ? "Finding…" : "Search"}</button>
           </div>
         </form>
-        {suggestionsLoading && <p className="mt-2 text-xs text-slate-500">Searching addresses…</p>}
-        {matches.length > 0 && <div className="mt-1 max-h-40 overflow-y-auto rounded-[5px] border border-[#BED8D4] bg-white">{matches.map(match => <button key={`${match.lat}-${match.lng}`} onClick={() => openEditor(match)} className="block w-full border-b border-[#BED8D4]/60 p-3 text-left text-sm last:border-0 hover:bg-[#E8F2F1]">{match.address}</button>)}</div>}
+        {matches.length > 0 && <div className="-mt-px max-h-40 overflow-y-auto rounded-b-[5px] border border-[#BED8D4] bg-white">{matches.map(match => <button key={`${match.lat}-${match.lng}`} onClick={() => openEditor(match)} className="block w-full border-b border-[#BED8D4]/60 p-3 text-left text-sm last:border-0 hover:bg-[#E8F2F1]">{match.address}</button>)}</div>}
         <button type="button" onClick={useCurrentLocation} disabled={locationBusy} className="mt-3 flex w-full items-center gap-2 py-1 text-left text-sm font-bold text-[#08679e] disabled:cursor-wait"><Icon name="location" size={18} />Use my current location{locationBusy && <span role="status" aria-label="Finding your location" className="ml-1 h-4 w-4 animate-spin rounded-full border-2 border-[#08679e] border-t-transparent" />}</button>
         {!suggestionsLoading && query.trim().length >= 3 && !matches.length && !error && <p className="mt-2 text-xs text-slate-500">Search for a verified address to see matches.</p>}
         {error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}
