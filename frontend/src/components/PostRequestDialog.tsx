@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import Icon from "./Icon";
 import AddressLookup, { type GeocodedAddress } from "./AddressLookup";
 import { addressPolicyError } from "../data/addressPolicy";
+import "./PostRequestDialog.css";
 
 type Props = { onClose: () => void; onPosted: () => void };
 const inputClass = "mt-1 block w-full rounded-lg border border-[#BED8D4] bg-white p-2.5";
@@ -70,13 +71,13 @@ export default function PostRequestDialog({ onClose, onPosted }: Props) {
 
   return <dialog ref={dialog} aria-labelledby="post-request-title"
     onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}
-    className="m-auto max-h-[calc(100dvh-4rem)] w-[calc(100%-2rem)] max-w-lg overflow-auto rounded-2xl border border-[#BED8D4] bg-[#F7F9F9] p-5 text-[#102A3A] shadow-xl backdrop:bg-[#102A3A]/50 sm:p-7">
+    className="post-request-dialog m-auto max-h-[calc(100dvh-4rem)] w-[calc(100%-2rem)] max-w-lg overflow-auto rounded-2xl border border-[#BED8D4] bg-[#F7F9F9] p-5 text-[#102A3A] shadow-xl backdrop:bg-[#102A3A]/50 sm:p-7">
     <div className="mb-5 flex items-center justify-between gap-4">
       <h2 id="post-request-title" className="text-2xl font-extrabold">Post a quest</h2>
       <button type="button" onClick={onClose} disabled={busy} aria-label="Close post request" className="rounded-md p-2 hover:bg-[#BED8D4]/40"><Icon name="x" size={20} /></button>
     </div>
     <form onSubmit={submit} className="grid gap-4" aria-busy={busy}>
-      <label className="text-sm font-semibold">What do you need help with?<textarea name="description" className={inputClass} rows={2} maxLength={150} required /><span className="mt-1 block text-xs font-normal text-slate-500">Up to 150 characters</span></label>
+      <label className="text-sm font-semibold">What do you need help with?<textarea name="description" className={`${inputClass} resize-none`} rows={2} maxLength={150} required /><span className="mt-1 block text-xs font-normal text-slate-500">Up to 150 characters</span></label>
       <label className="text-sm font-semibold">Category<select name="category" className={inputClass} defaultValue="" required><option value="" disabled>Select a category</option><option>Delivery</option><option>Moving</option><option>Home Help</option><option>Tech</option><option>Academic</option></select></label>
       <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-4">
         <div className="min-w-0">

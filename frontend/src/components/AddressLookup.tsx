@@ -50,13 +50,13 @@ export default function AddressLookup({ id, label, placeholder, initialValue = "
 
   return <div>
     <label htmlFor={id} className="text-sm font-semibold">{label}</label>
-    <div role="search" className="mt-1 flex gap-2">
-      <input id={id} value={query} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); void search(); } }} onChange={event => { setQuery(event.target.value); setResults([]); onSelect(null); setError(""); }} className="min-w-0 flex-1 rounded-lg border border-[#BED8D4] bg-white p-2.5" placeholder={placeholder} maxLength={200} />
-      <button type="button" onClick={() => void search()} disabled={busy || !query.trim()} className="shrink-0 rounded-lg border border-[#BED8D4] bg-white px-3 text-sm font-bold text-[#08679e] disabled:opacity-50">{busy ? "Searching…" : "Search"}</button>
+    <div role="search" className="mt-1 flex gap-2 rounded-lg border border-[#BED8D4] bg-white p-1 focus-within:border-[#2081C3]">
+      <input id={id} value={query} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); void search(); } }} onChange={event => { setQuery(event.target.value); setResults([]); onSelect(null); setError(""); }} className="min-w-0 flex-1 bg-transparent px-2.5 py-2 outline-none" placeholder={placeholder} maxLength={200} />
+      <button type="button" onClick={() => void search()} disabled={busy || !query.trim()} className="shrink-0 rounded-md bg-[#08679e] px-3 text-sm font-bold text-white hover:bg-[#075785] disabled:opacity-50">{busy ? "Searching…" : "Search"}</button>
     </div>
     {results.length > 1 && <ul className="mt-2 max-h-36 overflow-auto rounded-lg border border-[#BED8D4] bg-white" aria-label={`${label} matches`}>
       {results.map(result => <li key={`${result.lat},${result.lng}`}><button type="button" onClick={() => choose(result)} className="w-full border-b border-[#BED8D4]/60 px-3 py-2 text-left text-sm last:border-0 hover:bg-[#E8F2F1]">{result.address}</button></li>)}
     </ul>}
-    {(error || (query && !results.length && !busy)) && <p role="status" className={`mt-1 text-xs ${error ? "text-red-700" : "text-slate-500"}`}>{error || "Search and choose a verified address."}</p>}
+    {error && <p role="alert" className="mt-1 text-xs text-red-700">{error}</p>}
   </div>;
 }
