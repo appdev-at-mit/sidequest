@@ -1,5 +1,5 @@
 const { MongoClient, ObjectId } = require("mongodb");
-const { canTransition, normalizeQuestStatus } = require("./quest-lifecycle.js");
+const { canTransition, normalizeQuestStatus, canAccept, cancellationStatus, expirationGraceDeadline, shouldArchiveExpiredQuest } = require("./quest-lifecycle.js");
 const { schemas } = require("./validation.js");
 require("dotenv").config();
 
@@ -59,7 +59,9 @@ function requestExpiry(request) {
 function publicQuest(request, viewer, viewerIsParty) {
     const rewardCents = Number.isSafeInteger(request.rewardCents) ? request.rewardCents : Math.round(Number(request.pay ?? 0) * 100);
     const expiry = requestExpiry(request);
-    const result = { ...request, status: normalizeQuestStatus(request.status), rewardCents, pay: rewardCents / 100, expiresAt: Number.isFinite(expiry) ? new Date(expiry) : null, expired: expiry <= Date.now() };
+    const status = normalizeQuestStatus(request.status);
+    const result = { ...request, status, rewardCents, pay: rewardCents / 100, expiresAt: Number.isFinite(expiry) ? new Date(expiry) : null, expired: status === "expired" || (status === "open" && expiry <= Date.now()), expirationGraceUntil: request.expirationGraceUntil ?? (Number.isFinite(expiry) ? new Date(expirationGraceDeadline(expiry)) : null) };
+    if (result.helperLocation?.updatedAt && new Date(result.helperLocation.updatedAt).getTime() < Date.now() - 2 * 60 * 1000) delete result.helperLocation;
     delete result.idempotencyKey;
     delete result.payloadFingerprint;
     delete result.requesterId;
@@ -67,8 +69,10 @@ function publicQuest(request, viewer, viewerIsParty) {
     if (!viewerIsParty) {
         delete result.agreementSnapshot;
         delete result.completionSubmission;
+        delete result.completionReceipt;
         delete result.statusHistory;
         delete result.disputedFromStatus;
+        delete result.helperLocation;
         delete result.paymentSentAt;
         delete result.paymentConfirmedAt;
         delete result.requesterApprovedAt;
@@ -107,14 +111,20 @@ class DBController {
         await this.requests.createIndex({ requesterId: 1, idempotencyKey: 1 }, { unique: true, partialFilterExpression: { idempotencyKey: { $type: "string" }, requesterId: { $type: "objectId" } }, name: "request_idempotency_by_user" });
         await this.requests.createIndex({ helper: 1, status: 1 });
         await this.requests.createIndex({ expiresAt: 1, status: 1 });
+        await this.requests.createIndex({ status: 1, expirationGraceUntil: 1, deletedAt: 1 });
         await this.notifications.createIndex({ kerb: 1, createdAt: -1 });
         await this.notifications.createIndex({ userId: 1, createdAt: -1 });
+        await this.notifications.createIndex({ dedupeKey: 1 }, { unique: true, partialFilterExpression: { dedupeKey: { $type: "string" } }, name: "notification_dedupe" });
         await this.reviews.createIndex({ questId: 1, reviewer: 1 }, { unique: true });
         await this.reviews.createIndex({ questId: 1, reviewerId: 1 }, { unique: true, partialFilterExpression: { reviewerId: { $type: "objectId" } }, name: "review_once_by_user" });
         await this.disputes.createIndex({ status: 1, createdAt: 1 });
         await this.reports.createIndex({ status: 1, createdAt: 1 });
         await this.adminAudit.createIndex({ createdAt: -1 });
         await this.initializeIdentitySchema();
+    }
+
+    async close() {
+        await this.client.close();
     }
 
     async initializeIdentitySchema() {
@@ -224,13 +234,31 @@ class DBController {
 
     async updateOpenRequest(id, requester, changes) {
         const quest = await this.requests.findOne({ $and: [{ _id: new ObjectId(id), deletedAt: null }, identityClause(requester, "requesterId", "requester")] });
-        if (!quest || normalizeQuestStatus(quest.status) !== "open" || requestExpiry(quest) <= Date.now()) return null;
+        const now = Date.now();
+        const status = normalizeQuestStatus(quest?.status);
+        const wasExpired = status === "expired" || (status === "open" && requestExpiry(quest) <= now);
+        const withinGrace = wasExpired && (quest.expirationGraceUntil ? new Date(quest.expirationGraceUntil).getTime() : expirationGraceDeadline(requestExpiry(quest))) > now;
+        if (!quest || !((status === "open" && !wasExpired) || (withinGrace && !quest.helper))) return null;
         const filter = { $and: [{ _id: quest._id, deletedAt: null, status: quest.status }, identityClause(requester, "requesterId", "requester")] };
         if (quest.end != null) filter.end = quest.end;
         else if (quest.expiresAt) filter.expiresAt = quest.expiresAt;
         else if (quest.createdAt) filter.createdAt = quest.createdAt;
-        const result = await this.requests.updateOne(filter, { $set: changes });
-        return result.matchedCount ? this.getRequestById(id) : null;
+        const set = { ...changes, ...(wasExpired ? { status: "open" } : {}) };
+        const update = { $set: set };
+        if (wasExpired) {
+            update.$unset = { expiredAt: "", expirationGraceUntil: "", archivedAt: "" };
+            update.$push = { statusHistory: { from: "expired", to: "open", by: actorKerb(requester), byId: schemas.objectId(actorIdentity(requester).userId) ? new ObjectId(actorIdentity(requester).userId) : null, reason: "requester_extended_deadline", at: new Date() } };
+        }
+        return this.requests.findOneAndUpdate(filter, update, { returnDocument: "after" });
+    }
+
+    async extendExpiredQuest(id, requester, end) {
+        const quest = await this.requests.findOne({ $and: [{ _id: new ObjectId(id), deletedAt: null }, identityClause(requester, "requesterId", "requester")] });
+        const questStatus = normalizeQuestStatus(quest?.status);
+        const graceUntil = quest?.expirationGraceUntil ? new Date(quest.expirationGraceUntil).getTime() : expirationGraceDeadline(requestExpiry(quest ?? {}));
+        const deadlineAlreadyPassed = quest && requestExpiry(quest) <= Date.now();
+        if (!quest || !(["expired", "open"].includes(questStatus) && deadlineAlreadyPassed) || quest.helper || graceUntil <= Date.now() || Date.parse(end) <= Date.now()) return null;
+        return this.updateOpenRequest(id, requester, { end, expiresAt: new Date(end) });
     }
 
     async connectRequest(id, helper) {
@@ -238,17 +266,19 @@ class DBController {
         const helperId = actorIdentity(helper).userId;
         const requestId = new ObjectId(id);
         const candidate = await this.requests.findOne({ _id: requestId, deletedAt: null });
-        if (!candidate || (candidate.requester === helperKerb && (!candidate.requesterId || String(candidate.requesterId) === helperId)) || normalizeQuestStatus(candidate.status) !== "open" || requestExpiry(candidate) <= Date.now()) return null;
+            const now = new Date();
+            if (!candidate || (candidate.requester === helperKerb && (!candidate.requesterId || String(candidate.requesterId) === helperId)) || !canAccept(candidate.status, requestExpiry(candidate), now.getTime())) return null;
         const result = await this.client.withSession(session => session.withTransaction(async () => {
             const helperSelector = schemas.objectId(helperId) ? { _id: new ObjectId(helperId) } : { kerb: helperKerb };
             const helperUser = await this.users.findOneAndUpdate(helperSelector, { $inc: { questActivityVersion: 1 } }, { session, returnDocument: "after" });
             if (!helperUser || helperUser.moderationStatus === "permanently_suspended" || (helperUser.moderationStatus === "suspended" && (!helperUser.suspendedUntil || helperUser.suspendedUntil > new Date()))) return null;
             if (candidate.requesterId && String(candidate.requesterId) === String(helperUser._id)) return null;
             if (await this.isBlockedEitherWay({ userId: candidate.requesterId ? String(candidate.requesterId) : "", kerb: candidate.requester }, { userId: String(helperUser._id), kerb: helperKerb }, session)) return null;
-            const now = new Date();
+            const acceptanceTime = new Date();
             const filter = { _id: requestId, helper: null, deletedAt: null };
-            if (candidate.end != null) filter.end = candidate.end;
-            else if (candidate.expiresAt) filter.expiresAt = candidate.expiresAt;
+            if (candidate.end != null) filter.end = { $gt: acceptanceTime.toISOString() };
+            if (candidate.expiresAt) filter.expiresAt = { $gt: acceptanceTime };
+            if (candidate.end == null && !candidate.expiresAt && candidate.createdAt) filter.createdAt = candidate.createdAt;
             else if (candidate.createdAt) filter.createdAt = candidate.createdAt;
             if (candidate.status == null) filter.status = { $in: [null, 0, "open"] };
             else filter.status = candidate.status;
@@ -261,37 +291,69 @@ class DBController {
                 dropoff: candidate.dropoff ?? "",
                 start: candidate.start ?? null,
                 deadline: candidate.end ?? null,
-                acceptedAt: now,
+                acceptedAt: acceptanceTime,
                 paymentMethod: PAYMENT_METHODS.includes(candidate.paymentMethod)
                     ? candidate.paymentMethod
                     : PAYMENT_METHODS.includes(helperUser?.preferredPaymentMethod) ? helperUser.preferredPaymentMethod : null,
                 paymentInstructions: sanitizeText(helperUser?.paymentInstructions, 160),
             };
             const updated = await this.requests.findOneAndUpdate(filter, {
-                $set: { helper: helperKerb, helperId: helperUser._id, status: "in_progress", questStage: 0, acceptedAt: now, agreementSnapshot: snapshot },
-                $push: { statusHistory: { from: "open", to: "in_progress", by: helperKerb, at: now } },
+                $set: { helper: helperKerb, helperId: helperUser._id, status: "in_progress", questStage: 0, acceptedAt: acceptanceTime, agreementSnapshot: snapshot },
+                $push: { statusHistory: { from: "open", to: "in_progress", by: helperKerb, at: acceptanceTime } },
             }, { session, returnDocument: "after" });
             return updated;
         }));
         return result;
     }
 
-    async expireUnattendedQuests(now = new Date()) {
-        const cutoff = new Date(now.getTime() - 86400000);
-        const candidates = await this.requests.find({ status: { $in: ["open", 0] }, deletedAt: null }, {
-            projection: { _id: 1, requester: 1, status: 1, end: 1, expiresAt: 1, createdAt: 1 },
+    async reconcileQuestLifecycle(now = new Date()) {
+        await this.requests.updateMany({ "helperLocation.updatedAt": { $lt: new Date(now.getTime() - 2 * 60 * 1000) } }, { $unset: { helperLocation: "" } });
+        const candidates = await this.requests.find({ status: { $in: ["open", 0, null] }, helper: null, deletedAt: null }, {
+            projection: { _id: 1, requester: 1, requesterId: 1, status: 1, end: 1, expiresAt: 1, createdAt: 1 },
         }).toArray();
-        const expired = candidates.filter(quest => requestExpiry(quest) <= cutoff.getTime());
-        if (!expired.length) return 0;
-        const operations = expired.map(quest => {
-            const filter = { _id: quest._id, requester: quest.requester, status: quest.status, deletedAt: null };
+        let newlyExpired = 0;
+        for (const quest of candidates) {
+            const deadline = requestExpiry(quest);
+            if (!Number.isFinite(deadline) || deadline > now.getTime()) continue;
+            const expiredAt = new Date(deadline);
+            const filter = { _id: quest._id, status: quest.status ?? { $in: [null, 0] }, helper: null, deletedAt: null };
             if (quest.end != null) filter.end = quest.end;
             else if (quest.expiresAt) filter.expiresAt = quest.expiresAt;
             else if (quest.createdAt) filter.createdAt = quest.createdAt;
-            return { updateOne: { filter, update: { $set: { deletedAt: now, deletionReason: "unattended_after_deadline" } } } };
-        });
-        const result = await this.requests.bulkWrite(operations, { ordered: false });
-        return result.modifiedCount;
+            const result = await this.requests.updateOne(filter, {
+                $set: { status: "expired", expiredAt, expirationGraceUntil: new Date(expirationGraceDeadline(deadline)) },
+                $push: { statusHistory: { from: "open", to: "expired", by: "system", reason: "deadline_passed", at: now } },
+            });
+            if (result.modifiedCount) newlyExpired += 1;
+        }
+
+        const expiredQuests = await this.requests.find({ status: "expired", helper: null, deletedAt: null }).toArray();
+        for (const quest of expiredQuests) {
+            const cancellationExpiry = quest.lastCancellation?.role === "acceptor";
+            const cancellationAt = quest.lastCancellation?.at ? new Date(quest.lastCancellation.at).getTime() : null;
+            await this.addNotificationOnce(quest.requesterId ? { userId: String(quest.requesterId), kerb: quest.requester } : quest.requester, {
+                type: "expired", title: "Quest expired", message: cancellationExpiry
+                    ? `The acceptor cancelled after the deadline. Your quest has expired: “${quest.title ?? quest.description}”.`
+                    : `Your quest “${quest.title ?? quest.description}” has expired. Extend the deadline within 24 hours to make it available again.`, requestId: String(quest._id),
+            }, cancellationExpiry && Number.isFinite(cancellationAt) ? `quest-cancel:${quest._id}:${cancellationAt}` : `quest-expired:${quest._id}`);
+        }
+
+        let archived = 0;
+        for (const quest of expiredQuests) {
+            const graceUntil = quest.expirationGraceUntil ? new Date(quest.expirationGraceUntil).getTime() : expirationGraceDeadline(requestExpiry(quest));
+            if (!shouldArchiveExpiredQuest(quest.status, graceUntil, now.getTime(), {
+                hasObligation: Boolean(quest.paymentSentAt || quest.paymentConfirmedAt || quest.requesterApprovedAt || quest.completionSubmission || quest.completionReceipt),
+                hasDispute: Boolean(quest.disputeOpenedAt),
+                completed: normalizeQuestStatus(quest.status) === "completed",
+            })) continue;
+            const filter = { _id: quest._id, status: "expired", helper: null, deletedAt: null, disputeOpenedAt: null };
+            if (quest.expirationGraceUntil) filter.expirationGraceUntil = quest.expirationGraceUntil;
+            if (quest.end != null) filter.end = quest.end;
+            else if (quest.expiresAt) filter.expiresAt = quest.expiresAt;
+            const result = await this.requests.updateOne(filter, { $set: { deletedAt: now, archivedAt: now, deletionReason: "expired_after_grace" } });
+            if (result.modifiedCount) archived += 1;
+        }
+        return { newlyExpired, archived };
     }
 
     async updateQuestStage(id, helper, stage) {
@@ -305,6 +367,14 @@ class DBController {
             $push: { progressHistory: { stage, by: actorKerb(helper), byId: schemas.objectId(actorIdentity(helper).userId) ? new ObjectId(actorIdentity(helper).userId) : null, at: now } },
         });
         return result.modifiedCount ? quest : null;
+    }
+
+    async updateQuestHelperLocation(id, helper, lat, lng) {
+        const now = new Date();
+        return this.requests.findOneAndUpdate({ $and: [
+            { _id: new ObjectId(id), status: "in_progress", deletedAt: null },
+            identityClause(helper, "helperId", "helper"),
+        ] }, { $set: { helperLocation: { lat, lng, updatedAt: now } } }, { returnDocument: "after" });
     }
 
     async changeQuestState({ id, actor, from, to, fields = {} }) {
@@ -322,14 +392,15 @@ class DBController {
         return updated;
     }
 
-    async submitCompletion(id, helper, description, evidence) {
+    async submitRequesterCompletion(id, requester, evidence, imageUrl) {
         const now = new Date();
-        const quest = await this.requests.findOne({ $and: [{ _id: new ObjectId(id), deletedAt: null }, identityClause(helper, "helperId", "helper")] });
+        const quest = await this.requests.findOne({ $and: [{ _id: new ObjectId(id), deletedAt: null }, identityClause(requester, "requesterId", "requester")] });
         if (!quest || normalizeQuestStatus(quest.status) !== "in_progress") return null;
         return this.requests.findOneAndUpdate(
-            { $and: [{ _id: quest._id, status: quest.status, deletedAt: null }, identityClause(helper, "helperId", "helper")] },
-            { $set: { status: "pending_review", completionSubmission: { description, evidence, submittedAt: now, submittedById: quest.helperId ?? null }, completionSubmittedAt: now },
-                $push: { statusHistory: { from: "in_progress", to: "pending_review", by: actorKerb(helper), at: now } } },
+            { $and: [{ _id: quest._id, status: quest.status, deletedAt: null }, identityClause(requester, "requesterId", "requester")] },
+            { $set: { status: "awaiting_payment", completionReceipt: { evidence, imageUrl, submittedAt: now, submittedById: quest.requesterId ?? null }, requesterApprovedAt: now, requesterApprovedById: quest.requesterId ?? null },
+                $unset: { helperLocation: "" },
+                $push: { statusHistory: { from: "in_progress", to: "awaiting_payment", by: actorKerb(requester), at: now } } },
             { returnDocument: "after" }
         );
     }
@@ -370,12 +441,40 @@ class DBController {
         );
     }
 
-    async cancelQuest(id, actor) {
+    async cancelQuest(id, actor, reason = "No reason provided") {
         const quest = await this.requests.findOne({ _id: new ObjectId(id), deletedAt: null });
-        if (!quest || !(matchesIdentity(quest, actor, "requesterId", "requester") || matchesIdentity(quest, actor, "helperId", "helper"))) return null;
+        const isRequester = matchesIdentity(quest, actor, "requesterId", "requester");
+        const isHelper = matchesIdentity(quest, actor, "helperId", "helper");
+        if (!quest || (!isRequester && !isHelper)) return null;
         const status = normalizeQuestStatus(quest.status);
-        if (!canTransition(status, "cancelled")) return null;
-        return this.changeQuestState({ id, actor: actorKerb(actor), from: status, to: "cancelled", fields: { cancelledAt: new Date(), cancelledBy: actorKerb(actor), cancelledById: schemas.objectId(actorIdentity(actor).userId) ? new ObjectId(actorIdentity(actor).userId) : null } });
+        if (!canTransition(status, "cancelled") && !(isHelper && status === "in_progress")) return null;
+        const now = new Date();
+        const identity = actorIdentity(actor);
+        const helperHasDoneWork = (quest.questStage ?? 0) > 0 || Boolean(quest.completionSubmission || quest.completionReceipt)
+            || (quest.progressHistory ?? []).length > 0;
+        const paymentObligationExists = Boolean(quest.paymentSentAt || quest.paymentConfirmedAt || quest.requesterApprovedAt || ["pending_review", "awaiting_payment", "payment_sent"].includes(status));
+        const deadline = requestExpiry(quest);
+        const disposition = cancellationStatus({ isAcceptor: isHelper, status, deadline, now: now.getTime(), hasWork: helperHasDoneWork, hasObligation: paymentObligationExists, hasDispute: Boolean(quest.disputeOpenedAt) });
+        const reopenStatus = isHelper && status === "in_progress" && disposition !== "cancelled" ? disposition : null;
+        const targetStatus = reopenStatus ?? "cancelled";
+        const cancellation = {
+            role: isHelper ? "acceptor" : "requester",
+            reason: sanitizeText(reason, 500) || "No reason provided",
+            at: now,
+            previousAcceptor: quest.helper ?? null,
+            previousAcceptorId: quest.helperId ?? null,
+            cancelledBy: actorKerb(actor),
+            cancelledById: schemas.objectId(identity.userId) ? new ObjectId(identity.userId) : null,
+            autoReopened: reopenStatus === "open",
+        };
+        const filter = { _id: quest._id, status: quest.status, deletedAt: null, ...identityClause(actor, isHelper ? "helperId" : "requesterId", isHelper ? "helper" : "requester") };
+        const update = {
+            $set: { status: targetStatus, lastCancellation: cancellation, ...(targetStatus === "expired" ? { expiredAt: new Date(deadline), expirationGraceUntil: new Date(expirationGraceDeadline(deadline)) } : {}) },
+            $push: { statusHistory: { from: status, to: targetStatus, by: actorKerb(actor), byId: cancellation.cancelledById, reason: cancellation.reason, previousAcceptor: cancellation.previousAcceptor, previousAcceptorId: cancellation.previousAcceptorId, at: now } },
+        };
+        if (reopenStatus) update.$unset = { helper: "", helperId: "", acceptedAt: "", agreementSnapshot: "", questStage: "", helperLocation: "" };
+        else if (isHelper) update.$unset = { helperLocation: "" };
+        return this.requests.findOneAndUpdate(filter, update, { returnDocument: "after" });
     }
 
     async openDispute(id, reporter, reason, description, evidence) {
@@ -604,10 +703,13 @@ class DBController {
     }
 
     async deleteRequest(id, actor) {
-        const kerb = actorKerb(actor);
         const quest = await this.requests.findOne({ $and: [{ _id: new ObjectId(id), deletedAt: null }, identityClause(actor, "requesterId", "requester")] });
-        if (!quest || normalizeQuestStatus(quest.status) !== "open") return { modifiedCount: 0 };
-        return this.requests.updateOne({ $and: [{ _id: quest._id, status: quest.status, deletedAt: null }, identityClause(actor, "requesterId", "requester")] }, { $set: { deletedAt: new Date() } });
+        const status = normalizeQuestStatus(quest?.status);
+        const graceUntil = quest?.expirationGraceUntil ? new Date(quest.expirationGraceUntil).getTime() : expirationGraceDeadline(requestExpiry(quest ?? {}));
+        const openAvailable = status === "open" && requestExpiry(quest ?? {}) > Date.now();
+        const expiredInGrace = (status === "expired" || (status === "open" && requestExpiry(quest ?? {}) <= Date.now())) && graceUntil > Date.now() && !quest?.helper;
+        if (!quest || !(openAvailable || expiredInGrace)) return { modifiedCount: 0 };
+        return this.requests.updateOne({ $and: [{ _id: quest._id, status: quest.status, deletedAt: null }, identityClause(actor, "requesterId", "requester")] }, { $set: { deletedAt: new Date(), archivedAt: new Date(), deletionReason: "requester_deleted" } });
     }
 
     async getQuestMessages(requestId, since = null) {
@@ -630,6 +732,23 @@ class DBController {
         const userId = identity.userId || (user?._id ? String(user._id) : "");
         if (!schemas.objectId(userId) && !identity.kerb) return;
         await this.notifications.insertOne({ kerb: identity.kerb || undefined, userId: schemas.objectId(userId) ? new ObjectId(userId) : null, ...notification, readAt: null, createdAt: new Date() });
+    }
+
+    async addNotificationOnce(recipient, notification, dedupeKey) {
+        const identity = actorIdentity(recipient);
+        if (!identity.userId && !identity.kerb) return;
+        const user = !identity.userId && identity.kerb ? await this.users.findOne({ kerb: identity.kerb }, { projection: { _id: 1 } }) : null;
+        const userId = identity.userId || (user?._id ? String(user._id) : "");
+        if (!schemas.objectId(userId) && !identity.kerb) return;
+        try { await this.notifications.updateOne({ dedupeKey }, { $setOnInsert: {
+            dedupeKey,
+            kerb: identity.kerb || undefined,
+            userId: schemas.objectId(userId) ? new ObjectId(userId) : null,
+            ...notification,
+            readAt: null,
+            createdAt: new Date(),
+        } }, { upsert: true }); }
+        catch (error) { if (error?.code !== 11000) throw error; }
     }
 
     async getNotifications(actor) {

@@ -25,9 +25,12 @@ export type Request = {
   requesterRating?: number | null;
   requesterReviewCount?: number;
   imageUrl?: string | null;
-  status?: "open" | "in_progress" | "pending_review" | "awaiting_payment" | "payment_sent" | "completed" | "disputed" | "cancelled";
+  status?: "open" | "in_progress" | "pending_review" | "awaiting_payment" | "payment_sent" | "completed" | "disputed" | "cancelled" | "expired";
+  expirationGraceUntil?: string | null;
+  lastCancellation?: { role?: string; reason?: string; previousAcceptor?: string | null; at?: string | null } | null;
   questStage?: number;
   helper?: string | null;
+  helperLocation?: { lat: number; lng: number; updatedAt: string } | null;
   requester?: string | null;
   paymentMethod?: string | null;
   acceptedAt?: string | null;
@@ -43,6 +46,7 @@ export type Request = {
     paymentInstructions?: string;
   };
   completionSubmission?: { description: string; evidence?: string; submittedAt: string };
+  completionReceipt?: { evidence?: string; imageUrl?: string; submittedAt: string };
   requesterApprovedAt?: string | null;
   paymentSentAt?: string | null;
   paymentConfirmedAt?: string | null;

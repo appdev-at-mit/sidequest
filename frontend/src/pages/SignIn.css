@@ -14,9 +14,12 @@
   font-family: "DM Sans", Inter, ui-sans-serif, system-ui, sans-serif;
 }
 .landing-header { position: relative; z-index: 2; display: flex; align-items: center; justify-content: space-between; }
+.landing-header-actions { display: flex; align-items: center; gap: .6rem; }
 .landing-brand { display: inline-flex; align-items: center; gap: .65rem; color: inherit; text-decoration: none; font-size: 1.45rem; font-weight: 800; letter-spacing: -.07em; }
 .landing-brand-mark { display: grid; width: 2.25rem; height: 2.25rem; place-items: center; border-radius: .7rem; background: #102a3a; color: white; font-size: 1.65rem; font-weight: 900; line-height: 1; letter-spacing: 0; -webkit-text-stroke: .8px currentColor; }
 .landing-header-login { border: 1px solid #102a3a; border-radius: 999px; background: #102a3a; padding: .65rem 1.25rem; color: white; font: inherit; font-size: .9rem; font-weight: 700; cursor: pointer; }
+.landing-header-signup { border: 1px solid #102a3a; border-radius: 999px; background: transparent; padding: .65rem 1.15rem; color: #102a3a; font: inherit; font-size: .9rem; font-weight: 700; cursor: pointer; transition: background .15s ease, color .15s ease; }
+.landing-header-signup:hover { background: #102a3a; color: white; }
 .landing-content { position: relative; z-index: 1; align-self: center; justify-self: center; width: min(100%, 690px); padding: 3.5rem 0 4rem; text-align: center; }
 .landing-eyebrow { margin-bottom: 1rem; font-size: .72rem; font-weight: 800; letter-spacing: .19em; color: #174f72; }
 .landing-content h1 { margin: 0; font-size: clamp(3.3rem, 9vw, 7rem); font-weight: 800; line-height: .98; letter-spacing: -.075em; }
@@ -35,9 +38,15 @@
 .landing-login-form { display: grid; gap: 1rem; margin-top: 1.6rem; }
 .landing-login-form > label:not(.landing-remember) { display: grid; gap: .45rem; font-size: .82rem; font-weight: 700; }
 .landing-login-form input:not([type="checkbox"]) { width: 100%; border: 1px solid #c8d7d8; border-radius: 8px; padding: .8rem .9rem; font: inherit; outline-color: #2081c3; }
+.landing-password-field { position: relative; display: block; }
+.landing-login-form .landing-password-field input { padding-right: 3rem; }
+.landing-login-form .landing-password-toggle { position: absolute; top: 50%; right: .25rem; display: grid; width: 2.5rem; height: 2.5rem; place-items: center; transform: translateY(-50%); border: 0; border-radius: 7px; background: transparent; color: #536b75; cursor: pointer; }
+.landing-login-form .landing-password-toggle:hover { background: #edf3f3; color: #08679e; }
 .landing-login-form .landing-remember { display: flex; align-items: center; gap: .55rem; color: #536b75; font-size: .83rem; }
 .landing-login-form > button { border: 0; border-radius: 8px; background: #08679e; padding: .9rem; color: white; font: inherit; font-weight: 750; cursor: pointer; }
 .landing-login-form > button:disabled { opacity: .6; cursor: wait; }
+.landing-dialog-hint { margin: -.55rem 0 0; color: #617680; font-size: .8rem; }
+.landing-dialog-action { width: 100%; margin-top: 1.5rem; border: 0; border-radius: 8px; background: #08679e; padding: .9rem; color: white; font: inherit; font-weight: 750; cursor: pointer; }
 .landing-error { margin-top: 1.25rem; color: #7c211b; font-weight: 650; }
 .landing-footer-note { margin-top: 2.5rem; color: #174f72; font-size: .86rem; font-weight: 600; }
 .landing-object { position: absolute; z-index: 0; width: clamp(220px, 30vw, 410px); filter: drop-shadow(0 13px 0 #174f721a); }
@@ -56,6 +65,8 @@
   .landing-page { padding: 1rem 1.25rem; }
   .landing-footer { min-height: 3.25rem; justify-content: center; padding-inline: 1rem; }
   .landing-footer-links { gap: .55rem; font-size: .76rem; }
+  .landing-header-actions { gap: .4rem; }
+  .landing-header-login, .landing-header-signup { padding: .55rem .85rem; font-size: .82rem; }
   .landing-ground { bottom: 3.25rem; }
   .landing-content { padding: 5rem 0 7rem; }
   .landing-content h1 { font-size: clamp(3.4rem, 15vw, 5.8rem); }

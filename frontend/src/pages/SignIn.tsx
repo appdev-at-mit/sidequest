@@ -35,11 +35,28 @@ function LaundryIllustration() {
   );
 }
 
+function PasswordEye({ visible }: { visible: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {visible ? <>
+        <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z" />
+        <circle cx="12" cy="12" r="3" />
+      </> : <>
+        <path d="m3 3 18 18M10.6 5.1A10.8 10.8 0 0 1 12 5c6.4 0 10 7 10 7a15 15 0 0 1-3 3.7M6.2 6.2C3.4 8 2 12 2 12s3.6 7 10 7a10 10 0 0 0 4-.8" />
+        <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+      </>}
+    </svg>
+  );
+}
+
 export default function SignIn() {
   const { setIsLoggedIn, setUserName, setUserKerb } = useAuth();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [showLogin, setShowLogin] = useState(false);
+  const [showSignup, setShowSignup] = useState(false);
+  const [signupSuccess, setSignupSuccess] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   async function passwordLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -51,11 +68,33 @@ export default function SignIn() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ kerb: fields.get("kerb"), password: fields.get("password"), remember: fields.get("remember") === "on" }),
       });
-      const data = await response.json();
+      const data = await response.json().catch(() => null);
+      if (!data) throw new Error("Could not reach the SideQuest account service. Try again.");
       if (!response.ok) throw new Error(data?.msg ?? "Could not log in.");
       setIsLoggedIn(true);
       setUserName(data.name ?? "");
       setUserKerb(data.kerb ?? "");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not reach SideQuest. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function passwordSignup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const fields = new FormData(event.currentTarget);
+      const response = await fetch("/api/signup", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kerb: fields.get("kerb"), name: fields.get("name"), password: fields.get("password") }),
+      });
+      const data = await response.json().catch(() => null);
+      if (!data) throw new Error("Could not reach the SideQuest account service. Try again.");
+      if (!response.ok) throw new Error(data?.msg ?? "Could not create your account.");
+      setSignupSuccess(true);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not reach SideQuest. Try again.");
     } finally {
@@ -69,7 +108,10 @@ export default function SignIn() {
         <a className="landing-brand" href="/" aria-label="SideQuest home">
           <span className="landing-brand-mark" aria-hidden="true">→</span><span>sidequest</span>
         </a>
-        <button type="button" className="landing-header-login" onClick={() => setShowLogin(true)}>Log in</button>
+        <div className="landing-header-actions">
+          <button type="button" className="landing-header-signup" onClick={() => { setError(""); setSignupSuccess(false); setShowSignup(true); }}>Sign up</button>
+          <button type="button" className="landing-header-login" onClick={() => { setError(""); setShowLogin(true); }}>Log in</button>
+        </div>
       </header>
       <BicycleIllustration />
       <LaundryIllustration />
@@ -91,11 +133,32 @@ export default function SignIn() {
           <p className="text-xs leading-5 text-amber-800">Accounts are local to SideQuest. Entering a Kerberos username does not verify MIT or university affiliation.</p>
           <form onSubmit={passwordLogin} className="landing-login-form">
             <label>Username<input name="kerb" autoComplete="username" required maxLength={64} /></label>
-            <label>Password<input name="password" type="password" autoComplete="current-password" required maxLength={256} /></label>
+            <label>Password<span className="landing-password-field"><input name="password" type={showPassword ? "text" : "password"} autoComplete="current-password" required maxLength={256} /><button type="button" className="landing-password-toggle" aria-label={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword} onClick={() => setShowPassword(value => !value)}><PasswordEye visible={showPassword} /></button></span></label>
             <label className="landing-remember"><input type="checkbox" name="remember" /> Keep me signed in for 30 days</label>
             {error && <p role="alert" className="landing-error">{error}</p>}
             <button type="submit" disabled={busy}>{busy ? "Logging in…" : "Log in"}</button>
           </form>
+        </section>
+      </div>}
+      {showSignup && <div className="landing-login-backdrop">
+        <section role="dialog" aria-modal="true" aria-labelledby="signup-title" className="landing-login-dialog">
+          <button type="button" className="landing-dialog-close" aria-label="Close sign up" onClick={() => setShowSignup(false)}>×</button>
+          <p className="landing-dialog-eyebrow">TEMPORARY SIGN UP</p>
+          <h2 id="signup-title">Create an account</h2>
+          {signupSuccess ? <>
+            <p className="landing-dialog-copy">Your SideQuest account was created. Sign in to continue.</p>
+            <button type="button" className="landing-dialog-action" onClick={() => { setShowSignup(false); setShowLogin(true); setError(""); }}>Go to log in</button>
+          </> : <>
+            <p className="landing-dialog-copy">Create a local SideQuest account. A Kerberos username here does not verify MIT or university affiliation.</p>
+            <form onSubmit={passwordSignup} className="landing-login-form">
+              <label>Name<input name="name" autoComplete="name" required maxLength={100} /></label>
+              <label>Username<input name="kerb" autoComplete="username" required maxLength={64} /></label>
+              <label>Password<span className="landing-password-field"><input name="password" type={showPassword ? "text" : "password"} autoComplete="new-password" required minLength={12} maxLength={256} /><button type="button" className="landing-password-toggle" aria-label={showPassword ? "Hide password" : "Show password"} aria-pressed={showPassword} onClick={() => setShowPassword(value => !value)}><PasswordEye visible={showPassword} /></button></span></label>
+              <p className="landing-dialog-hint">At least 12 characters; letters, numbers, and symbols are allowed.</p>
+              {error && <p role="alert" className="landing-error">{error}</p>}
+              <button type="submit" disabled={busy}>{busy ? "Creating account…" : "Create account"}</button>
+            </form>
+          </>}
         </section>
       </div>}
       <div className="landing-ground" aria-hidden="true" />

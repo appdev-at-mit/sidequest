@@ -118,7 +118,7 @@ export default function App() {
           reward: (cents / 100).toFixed(2), rewardCents: cents, location: raw.pickup || (raw.lat != null && raw.lng != null ? "Location shown on the map" : "Location not provided"),
           distance: "", posted: raw.createdAt ? new Date(raw.createdAt).toLocaleString() : "Posting time unavailable", lat: raw.lat ?? null, lng: raw.lng ?? null,
           poster: raw.requesterName ?? raw.requester ?? "Unknown user", start: raw.start ?? null, end: raw.end ?? null, pickup: raw.pickup ?? null, dropoff: raw.dropoff ?? null, pickupLocation: raw.pickupLocation ?? null, dropoffLocation: raw.dropoffLocation ?? null,
-          createdAt: raw.createdAt ?? null, expiresAt: raw.expiresAt ?? null, expired: Boolean(raw.expired), imageUrl: raw.imageUrl ?? null,
+          createdAt: raw.createdAt ?? null, expiresAt: raw.expiresAt ?? null, expired: Boolean(raw.expired), expirationGraceUntil: raw.expirationGraceUntil ?? null, lastCancellation: raw.lastCancellation ?? null, imageUrl: raw.imageUrl ?? null,
           status: raw.status, questStage: raw.questStage, helper: raw.helper ?? null, requester: raw.requester ?? null, acceptedAt: raw.acceptedAt ?? null,
           agreementSnapshot: raw.agreementSnapshot, completionSubmission: raw.completionSubmission, requesterApprovedAt: raw.requesterApprovedAt ?? null,
           paymentSentAt: raw.paymentSentAt ?? null, paymentConfirmedAt: raw.paymentConfirmedAt ?? null, progressHistory: raw.progressHistory ?? raw.statusHistory ?? [],
@@ -186,6 +186,8 @@ export default function App() {
         createdAt?: string;
         expiresAt?: string;
         expired?: boolean;
+        expirationGraceUntil?: string | null;
+        lastCancellation?: Request["lastCancellation"];
         rating?: number;
         imageUrl?: string;
         status?: string | number;
@@ -229,6 +231,8 @@ export default function App() {
           createdAt: request.createdAt ?? null,
           expiresAt: request.expiresAt ?? (request.createdAt ? new Date(new Date(request.createdAt).getTime() + 24 * 60 * 60 * 1000).toISOString() : null),
           expired: request.expired ?? false,
+          expirationGraceUntil: request.expirationGraceUntil ?? null,
+          lastCancellation: request.lastCancellation ?? null,
           rating: request.rating ?? null,
           imageUrl: request.imageUrl ?? null,
           status: typeof request.status === "number" ? legacyStatus[request.status] ?? "open" : request.status as Request["status"],
@@ -274,6 +278,10 @@ export default function App() {
   function navigate(next: Page) {
     if (next !== "users") setUserProfileKerb("");
     setPage(next);
+    if (next === "map") {
+      setSelectedRequestId("");
+      setRouteRequest(null);
+    }
     const url = new URL(window.location.href);
     if (url.pathname.startsWith("/quests/")) url.pathname = "/";
     if (next === "map") url.searchParams.delete("page");
@@ -313,7 +321,7 @@ export default function App() {
   }
 
   async function deleteSelectedQuest() {
-    if (!selectedRequest || !window.confirm("Delete this open quest?")) return;
+    if (!selectedRequest || !window.confirm(selectedRequest.status === "expired" || selectedRequest.expired ? "Delete this expired quest?" : "Delete this open quest?")) return;
     try {
       const response = await fetch(`/api/requests/${encodeURIComponent(String(selectedRequest.id))}`, { method: "DELETE" });
       const result = await response.json().catch(() => null);

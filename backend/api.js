@@ -161,11 +161,14 @@ function summarizeQuestTitle(description) {
     dummyPasswordHash = await argon2.hash("unused authentication placeholder");
 
     console.log("Successfully connected");
-    const cleanupUnattendedQuests = () => db.expireUnattendedQuests()
-        .then(count => { if (count) console.log(`Removed ${count} unattended quest(s) after their deadline grace period.`); })
-        .catch(error => console.error("Quest expiration cleanup failed:", error.name));
-    void cleanupUnattendedQuests();
-    const questCleanupTimer = setInterval(() => { void cleanupUnattendedQuests(); }, 15 * 60 * 1000);
+    const reconcileQuestLifecycle = () => db.reconcileQuestLifecycle()
+        .then(result => {
+            if (result.newlyExpired) console.log(`Expired ${result.newlyExpired} quest(s) past their deadline.`);
+            if (result.archived) console.log(`Archived ${result.archived} expired quest(s) after their grace period.`);
+        })
+        .catch(error => console.error("Quest lifecycle reconciliation failed:", error.name));
+    void reconcileQuestLifecycle();
+    const questCleanupTimer = setInterval(() => { void reconcileQuestLifecycle(); }, 60 * 1000);
     questCleanupTimer.unref();
 
     app.get("/api/auth-status", (req, res) => {
@@ -286,7 +289,20 @@ function summarizeQuestTitle(description) {
                 description: cleanDescription, title: summarizeQuestTitle(cleanDescription), category,
                 rewardCents, pay, start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString(), expiresAt: new Date(endMs),
             });
-            if (!request) return res.status(409).json({ msg: "Only your open, unexpired quests can be edited." });
+            if (!request) return res.status(409).json({ msg: "This quest can no longer be edited, or its 24-hour extension window has ended." });
+            res.json({ result: "success", data: request });
+        } catch (error) { next(error); }
+    });
+
+    app.post("/api/requests/:id/extend", async (req, res, next) => {
+        if (rateLimited(req, res, "extend-expired-quest", 20)) return;
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid request ID." });
+        const endMs = schemas.isoDateTime(req.body?.end) ? Date.parse(req.body.end) : NaN;
+        if (!Number.isFinite(endMs) || endMs <= Date.now()) return res.status(400).json({ msg: "Choose a future deadline." });
+        try {
+            const request = await db.extendExpiredQuest(req.params.id, req.auth, new Date(endMs).toISOString());
+            if (!request) return res.status(409).json({ msg: "Only your expired, unaccepted quest can be extended within its 24-hour grace period." });
             res.json({ result: "success", data: request });
         } catch (error) { next(error); }
     });
@@ -696,21 +712,43 @@ function summarizeQuestTitle(description) {
         } catch (error) { next(error); }
     });
 
+    app.post("/api/requests/:id/location", async (req, res, next) => {
+        if (rateLimited(req, res, "quest-location", 3, 60 * 1000)) return;
+        if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
+        if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
+        const { lat, lng } = req.body ?? {};
+        if (!schemas.latitude(lat) || !schemas.longitude(lng)) return res.status(400).json({ msg: "Provide valid location coordinates." });
+        try {
+            const quest = await db.updateQuestHelperLocation(req.params.id, req.auth, lat, lng);
+            if (!quest) return res.status(409).json({ msg: "Only the assigned acceptor can share a location while the quest is in progress." });
+            res.json({ result: "success", updatedAt: quest.helperLocation.updatedAt });
+        } catch (error) { next(error); }
+    });
+
     app.post("/api/requests/:id/cancel", async (req, res, next) => {
         if (rateLimited(req, res, "quest-cancel", 15)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first" });
         if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid request ID" });
+        const reason = sanitizeText(req.body?.reason, 500) || "No reason provided";
         try {
-            const request = await db.cancelQuest(req.params.id, req.auth);
+            const request = await db.cancelQuest(req.params.id, req.auth, reason);
             if (!request) return res.status(409).json({ msg: "This quest can no longer be cancelled." });
-            const isRequester = request.requester === req.user.kerb;
-            const recipient = isRequester ? request.helper : request.requester;
-            if (recipient) await db.addNotification(recipient, {
-                type: "cancelled", title: "Quest cancelled", message: isRequester
-                    ? `${req.user.name || req.user.kerb} cancelled “${request.description}”.`
-                    : `${req.user.name || req.user.kerb} cancelled their assignment for “${request.description}”. The quest is closed.`, requestId: req.params.id,
-            });
-            res.json({ result: "success" });
+            const cancellation = request.lastCancellation;
+            const isHelperCancellation = cancellation?.role === "acceptor";
+            const recipient = isHelperCancellation
+                ? { userId: request.requesterId ? String(request.requesterId) : "", kerb: request.requester }
+                : { userId: request.helperId ? String(request.helperId) : "", kerb: request.helper ?? "" };
+            if (recipient.kerb || recipient.userId) await db.addNotificationOnce(recipient, {
+                type: isHelperCancellation && request.status === "open" ? "quest_reopened" : isHelperCancellation && request.status === "expired" ? "expired" : "cancelled",
+                title: isHelperCancellation && request.status === "open" ? "Quest available again" : isHelperCancellation && request.status === "expired" ? "Quest expired" : "Quest cancelled",
+                message: isHelperCancellation
+                    ? request.status === "open" ? `The acceptor cancelled. Your quest has been reopened: “${request.title ?? request.description}”.`
+                        : request.status === "expired" ? `The acceptor cancelled after the deadline. Your quest has expired: “${request.title ?? request.description}”.`
+                            : `The acceptor cancelled “${request.title ?? request.description}”. Since work or a payment obligation exists, the quest was not automatically reopened.`
+                    : `${req.user.name || req.user.kerb} cancelled “${request.title ?? request.description}”.`,
+                requestId: req.params.id,
+            }, `quest-cancel:${req.params.id}:${new Date(cancellation.at).getTime()}`);
+            res.json({ result: "success", status: request.status, cancellation });
         } catch (error) { next(error); }
     });
 
@@ -718,13 +756,15 @@ function summarizeQuestTitle(description) {
         if (rateLimited(req, res, "quest-completion", 15)) return;
         if (!req.isAuthenticated()) return res.status(401).json({ msg: "You need to log in first." });
         if (!schemas.objectId(req.params.id)) return res.status(400).json({ msg: "Invalid quest ID." });
-        const description = sanitizeText(req.body?.description, 2000);
         const evidence = sanitizeText(req.body?.evidence, 4000);
-        if (!description) return res.status(400).json({ msg: "Describe the completed work before submitting it for review." });
+        const imageUrl = typeof req.body?.imageUrl === "string" ? req.body.imageUrl : "";
+        const validPhoto = imageUrl.length <= 7_000_000 && (!imageUrl || /^data:image\/(?:png|jpe?g|webp|gif);base64,[A-Za-z0-9+/]+=*$/i.test(imageUrl));
+        if (!validPhoto) return res.status(400).json({ msg: "Choose a PNG, JPEG, WebP, or GIF receipt image under 5 MB." });
+        if (!evidence && !imageUrl) return res.status(400).json({ msg: "Upload a receipt image or add completion notes." });
         try {
-            const quest = await db.submitCompletion(req.params.id, req.auth, description, evidence);
-            if (!quest) return res.status(409).json({ msg: "Only the assigned completer can submit completion while the quest is in progress." });
-            await db.addNotification(quest.requester, { type: "pending_review", title: "Quest ready for review", message: `${req.user.name || req.user.kerb} submitted completion for “${quest.title ?? quest.description}”.`, requestId: req.params.id });
+            const quest = await db.submitRequesterCompletion(req.params.id, req.auth, evidence, imageUrl);
+            if (!quest) return res.status(409).json({ msg: "Only the requester can mark an in-progress quest complete." });
+            await db.addNotification(quest.helper, { type: "awaiting_payment", title: "Quest marked complete", message: `The requester marked “${quest.title ?? quest.description}” complete. Arrange the external reward payment.`, requestId: req.params.id });
             res.json({ result: "success", status: quest.status });
         } catch (error) { next(error); }
     });
@@ -842,5 +882,34 @@ function summarizeQuestTitle(description) {
         res.status(500).json({ result: "fail", msg: "The server could not complete the request." });
     });
 
-    app.listen(3000);
-})();
+    const server = app.listen(3000);
+    let shuttingDown = false;
+    const shutdown = signal => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        console.log(`Received ${signal}; closing the API and MongoDB connection.`);
+        clearInterval(questCleanupTimer);
+        server.close(async error => {
+            if (error) {
+                console.error("API shutdown failed:", error.name);
+                process.exitCode = 1;
+            }
+            try {
+                await db.close();
+            } catch (closeError) {
+                console.error("MongoDB shutdown failed:", closeError.name);
+                process.exitCode = 1;
+            }
+        });
+    };
+    process.once("SIGINT", () => shutdown("SIGINT"));
+    process.once("SIGTERM", () => shutdown("SIGTERM"));
+})().catch(async error => {
+    console.error("API startup failed:", error.name);
+    try {
+        await db.close();
+    } catch (closeError) {
+        console.error("MongoDB cleanup after startup failure failed:", closeError.name);
+    }
+    process.exitCode = 1;
+});
